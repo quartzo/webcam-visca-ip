@@ -17,9 +17,9 @@ struct CamCtrl {
 }
 
 impl CamCtrl {
-  async fn init(cam: &uvc::Camera, ctrlname: &str) -> Result<CamCtrl, UVIError> {
-    let ctrl = cam.get_ctrl_descr(ctrlname).await?;
-    let value = cam.get_ctrl(ctrlname).await?;
+  async fn init(cam: &uvc::Camera, camctrl: uvc::CamControl) -> Result<CamCtrl, UVIError> {
+    let ctrl = cam.get_ctrl_descr(camctrl).await?;
+    let value = cam.get_ctrl(camctrl).await?;
     Ok(CamCtrl {
       minimum: ctrl.minimum,
       maximum: ctrl.maximum,
@@ -51,8 +51,8 @@ struct PanTilt {
 impl PanTilt {
   async fn init(cam: &uvc::Camera) -> Result<PanTilt, UVIError> {
     Ok(PanTilt {
-      pan: CamCtrl::init(&cam, "pan_absolute").await?,
-      tilt: CamCtrl::init(&cam, "tilt_absolute").await?,
+      pan: CamCtrl::init(&cam, uvc::CamControl::PanAbsolute).await?,
+      tilt: CamCtrl::init(&cam, uvc::CamControl::TiltAbsolute).await?,
       panspeed: 0,
       tiltspeed: 0,    
     })
@@ -61,9 +61,9 @@ impl PanTilt {
     self.panspeed = 0;
     self.tiltspeed = 0;
     self.pan.set(pan);
-    cam.set_ctrl("pan_absolute", self.pan.value).await?;
+    cam.set_ctrl(uvc::CamControl::PanAbsolute, self.pan.value).await?;
     self.tilt.set(tilt);
-    cam.set_ctrl("tilt_absolute", self.tilt.value).await?;
+    cam.set_ctrl(uvc::CamControl::TiltAbsolute, self.tilt.value).await?;
     Ok(())
   }
   async fn relative_move(&mut self, cam: &uvc::Camera, pan_move:i64, tilt_move:i64) -> Result<(), UVIError> {
@@ -71,25 +71,25 @@ impl PanTilt {
     if self.pan.value >= self.pan.maximum || self.pan.value <= self.pan.minimum {
       self.panspeed = 0;
     }
-    cam.set_ctrl("pan_absolute", self.pan.value).await?;
+    cam.set_ctrl(uvc::CamControl::PanAbsolute, self.pan.value).await?;
     self.tilt.set(self.tilt.value + tilt_move);
     if self.tilt.value >= self.tilt.maximum || self.tilt.value <= self.tilt.minimum {
       self.tiltspeed = 0;
     }
-    cam.set_ctrl("tilt_absolute", self.tilt.value).await?;
+    cam.set_ctrl(uvc::CamControl::TiltAbsolute, self.tilt.value).await?;
     Ok(())
   }
   async fn periodic_move(&mut self, cam: &uvc::Camera) -> Result<(), UVIError> {
-    // seconds(degree/3600) per second -> /10 for each 100ms
-    let mut pan_move = self.panspeed/10; let mut tilt_move = self.tiltspeed/10;
+    // seconds(degree/3600) per second -> /20 for each 50ms
+    let mut pan_move = self.panspeed/20; let mut tilt_move = self.tiltspeed/20;
     if pan_move != 0 || tilt_move != 0 {
       if pan_move != 0 {
-        let pan_absolute = cam.get_ctrl("pan_absolute").await?;
+        let pan_absolute = cam.get_ctrl(uvc::CamControl::PanAbsolute).await?;
         let pandelta = (pan_absolute-self.pan.value).abs();
         if pandelta > 2*60*60 { pan_move = 0; }; // 2 degrees
       }
       if self.tiltspeed != 0 {
-        let tilt_absolute = cam.get_ctrl("tilt_absolute").await?;
+        let tilt_absolute = cam.get_ctrl(uvc::CamControl::TiltAbsolute).await?;
         let tiltdelta = (tilt_absolute-self.tilt.value).abs();
         if tiltdelta > 2*60*60 { tilt_move = 0; }; // 2 degrees
       }
@@ -108,26 +108,26 @@ struct Zoom {
 impl Zoom {
   async fn init(cam: &uvc::Camera) -> Result<Zoom, UVIError> {
     Ok(Zoom {
-      zoom: CamCtrl::init(&cam, "zoom_absolute").await?,
+      zoom: CamCtrl::init(&cam, uvc::CamControl::ZoomAbsolute).await?,
       zoomspeed: 0,
     })
   }
   async fn absolute(&mut self, cam: &uvc::Camera, zoom:i64) -> Result<(), UVIError> {
     self.zoomspeed = 0;
     self.zoom.set(zoom);
-    cam.set_ctrl("zoom_absolute", self.zoom.value).await?;
+    cam.set_ctrl(uvc::CamControl::ZoomAbsolute, self.zoom.value).await?;
     Ok(())
   }
   async fn periodic_move(&mut self, cam: &uvc::Camera) -> Result<(), UVIError> {
     if self.zoomspeed != 0 {
-      let zoom_absolute = cam.get_ctrl("zoom_absolute").await?;
+      let zoom_absolute = cam.get_ctrl(uvc::CamControl::ZoomAbsolute).await?;
       let zoomdelta = (zoom_absolute-self.zoom.value).abs();
       if zoomdelta < (self.zoom.maximum-self.zoom.minimum)/10 {
         self.zoom.set(self.zoom.value + self.zoomspeed);
         if self.zoom.value >= self.zoom.maximum || self.zoom.value <= self.zoom.minimum {
           self.zoomspeed = 0;
         }
-        cam.set_ctrl("zoom_absolute", self.zoom.value).await?;
+        cam.set_ctrl(uvc::CamControl::ZoomAbsolute, self.zoom.value).await?;
       }
     }
     Ok(())
@@ -144,8 +144,8 @@ struct Focus {
 impl Focus {
   async fn init(cam: &uvc::Camera) -> Result<Focus, UVIError> {
     Ok(Focus {
-      auto: CamCtrl::init(&cam, "focus_auto").await?,
-      focus: CamCtrl::init(&cam, "focus_absolute").await?,
+      auto: CamCtrl::init(&cam, uvc::CamControl::FocusAuto).await?,
+      focus: CamCtrl::init(&cam, uvc::CamControl::FocusAbsolute).await?,
       focusspeed: 0
     })
   }
@@ -153,22 +153,22 @@ impl Focus {
     self.focusspeed = 0;
     self.auto.set(if auto {1} else {0});
     self.focus.set(focus);
-    cam.set_ctrl("focus_auto", self.auto.value).await?;
+    cam.set_ctrl(uvc::CamControl::FocusAuto, self.auto.value).await?;
     if !auto {
-      cam.set_ctrl("focus_absolute", self.focus.value).await?;
+      cam.set_ctrl(uvc::CamControl::FocusAbsolute, self.focus.value).await?;
     }
     Ok(())
   }
   async fn periodic_move(&mut self, cam: &uvc::Camera) -> Result<(), UVIError> {
     if self.focusspeed != 0 {
-      let focus_absolute = cam.get_ctrl("focus_absolute").await?;
+      let focus_absolute = cam.get_ctrl(uvc::CamControl::FocusAbsolute).await?;
       let focusdelta = (focus_absolute-self.focus.value).abs();
       if focusdelta < (self.focus.maximum-self.focus.minimum)/10 {
         self.focus.set(self.focus.value + self.focusspeed);
         if self.focus.value >= self.focus.maximum || self.focus.value <= self.focus.minimum {
           self.focusspeed = 0;
         }
-        cam.set_ctrl("focus_absolute", self.focus.value).await?;
+        cam.set_ctrl(uvc::CamControl::FocusAbsolute, self.focus.value).await?;
       }
     }
     Ok(())
@@ -184,16 +184,16 @@ struct WhiteBal {
 impl WhiteBal {
   async fn init(cam: &uvc::Camera) -> Result<WhiteBal, UVIError> {
     Ok(WhiteBal {
-      auto: CamCtrl::init(&cam, "white_balance_temperature_auto").await?,
-      temp: CamCtrl::init(&cam, "white_balance_temperature").await?
+      auto: CamCtrl::init(&cam, uvc::CamControl::WhiteBalanceTemperatureAuto).await?,
+      temp: CamCtrl::init(&cam, uvc::CamControl::WhiteBalanceTemperature).await?
     })
   }
   async fn absolute(&mut self, cam: &uvc::Camera, auto: bool, temp:i64) -> Result<(), UVIError> {
     self.auto.set(if auto {1} else {0});
     self.temp.set(temp);
-    cam.set_ctrl("white_balance_temperature_auto", self.auto.value).await?;
+    cam.set_ctrl(uvc::CamControl::WhiteBalanceTemperatureAuto, self.auto.value).await?;
     if !auto {
-      cam.set_ctrl("white_balance_temperature", self.temp.value).await?;
+      cam.set_ctrl(uvc::CamControl::WhiteBalanceTemperature, self.temp.value).await?;
     }
     Ok(())
   }
@@ -246,10 +246,10 @@ impl AutoCamera {
     Ok((cam_chan,bus))
   }
   async fn run(mut self, mut recv_cam_chan: mpsc::UnboundedReceiver<protos::CamCmd>) {
-    let mut tmr100ms = time::interval(Duration::from_millis(100));
+    let mut tmr50ms = time::interval(Duration::from_millis(50));
     loop {
       tokio::select! {
-        _ = tmr100ms.tick() => {
+        _ = tmr50ms.tick() => {
           self.pantilt.periodic_move(&self.cam).await.unwrap();
           self.zoom.periodic_move(&self.cam).await.unwrap();
           self.focus.periodic_move(&self.cam).await.unwrap();
@@ -314,7 +314,7 @@ impl AutoCamera {
 
       protos::CamCmd::ZoomContinuous(zoom_f64) => { // -1 to 1
         self.zoom.zoomspeed = (((self.zoom.zoom.maximum-self.zoom.zoom.minimum) as f64)*
-          zoom_f64/10.0) as i64; // ops per 100ms
+          zoom_f64/20.0) as i64; // ops per 50ms
         self.zoom.periodic_move(&self.cam).await?;
       },
       protos::CamCmd::ZoomDirect(zoom_f64) => { // 0 to 1.0
@@ -331,7 +331,7 @@ impl AutoCamera {
       protos::CamCmd::FocusContinuous(focus_f64) => { // -1 to 1
         self.focus.absolute(&self.cam, false, self.focus.focus.value).await?;
         self.focus.focusspeed = (((self.focus.focus.maximum-self.focus.focus.minimum) as f64)*
-          focus_f64/10.0) as i64; // ops per 100ms
+          focus_f64/20.0) as i64; // ops per 50ms
         self.focus.periodic_move(&self.cam).await?;
       },
       protos::CamCmd::FocusDirect(focus_f64) => { // 1.0 (Near) - 0.0 (Far)
