@@ -27,7 +27,7 @@ impl fmt::Display for CamControl {
             CamControl::FocusAbsolute => write!(f, "focus_absolute"),
             CamControl::FocusAuto => write!(f, "focus_auto"),
             CamControl::WhiteBalanceTemperature => write!(f, "white_balance_temperature"),
-            CamControl::WhiteBalanceTemperatureAuto => write!(f, "pawhite_balance_temperature_auton_absolute"),
+            CamControl::WhiteBalanceTemperatureAuto => write!(f, "white_balance_temperature_auto"),
         }
     }
 }
