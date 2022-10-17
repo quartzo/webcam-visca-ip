@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::net;
 
 mod presetdb;
@@ -29,7 +29,7 @@ pub struct CamAppState {
 
 #[derive(Default, Debug)]
 struct WebCamViscaIPApp {
-    cams: HashMap<u8, CamAppState>,
+    cams: BTreeMap<u8, CamAppState>,
     sender_main_events: Option<mpsc::Sender<protos::MainEvent>>
 }
 
@@ -129,30 +129,18 @@ impl Application for WebCamViscaIPApp {
         })
     }
     fn view(&mut self) -> Element<Message> {
-        let mut ln: Vec<String> = Vec::new();
-        for ncam in 0..16 {
-            ln.push(match self.cams.get_mut(&ncam) {
-                Some(cam) => {
-                    format!("#{} / VISCA port {} / Bus {}: TCP Conections {}", cam.ncam, cam.port, cam.bus, cam.ncnx)
-                },
-                None => String::new()
-            });
-        }
-        Column::new()
+        let mut col = Column::new()
             .padding(20)
             .width(Length::Fill)
             .height(Length::Fill)
             .align_items(Alignment::Start)
-            .push(Text::new("List of active VISCA IP WebCams:").size(24))
-            .push(Text::new(&ln[0]).size(16))
-            .push(Text::new(&ln[1]).size(16))
-            .push(Text::new(&ln[2]).size(16))
-            .push(Text::new(&ln[3]).size(16))
-            .push(Text::new(&ln[4]).size(16))
-            .push(Text::new(&ln[6]).size(16))
-            .push(Text::new(&ln[7]).size(16))
-            .push(Text::new(&ln[8]).size(16))
-            .into()
+            .push(Text::new("List of active VISCA IP WebCams:").size(24));
+        for (_ncam, cam) in self.cams.iter() {
+            col = col.push(Text::new(
+                format!("#{} / VISCA port {} / Bus {}: TCP Conections {}", cam.ncam, cam.port, cam.bus, cam.ncnx)
+            ).size(16));
+        }
+        col.into()
     }
 }
 
