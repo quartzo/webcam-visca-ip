@@ -16,8 +16,10 @@ use iced::{
     window, executor, Alignment, Column, Element, Application, Command, Settings, Text, Length
 };
 use iced_native::subscription::{self, Subscription};
-use iced_native::futures::channel::mpsc;
-use iced_native::futures::SinkExt;
+//use iced_native::futures::channel::mpsc;
+use tokio::sync::mpsc;
+use tokio::task;
+use tokio::time::{sleep, Duration};
 
 #[derive(Default, Debug, Clone)]
 pub struct CamAppState {
@@ -38,6 +40,7 @@ pub enum Message {
     AdminChannelReady(mpsc::Sender<protos::MainEvent>),
     CamerasReady,
     NewViscaCam(u8, u32, String),
+    LostViscaCam(u8),
     NewViscaConnection(u8, net::SocketAddr),
     LostViscaConnection(u8, net::SocketAddr)
 }
@@ -68,7 +71,7 @@ impl Application for WebCamViscaIPApp {
         match message {
             Message::AdminChannelReady(sender) => {
                 self.sender_main_events = Some(sender.clone());
-                Command::perform(initialize_cameras(sender), |_| Message::CamerasReady)
+                Command::perform(start_camera_activation(sender), |_| Message::CamerasReady)
             },
             Message::CamerasReady => {
                 Command::none()
@@ -95,6 +98,10 @@ impl Application for WebCamViscaIPApp {
                 //println!("Disconnect from: {} ncam: {}", addr, ncam);
                 Command::none()
             },
+            Message::LostViscaCam(ncam) => {
+                self.cams.remove(&ncam);
+                Command::none()
+            },
         }
     }
     fn subscription(&self) -> Subscription<Message> {
@@ -106,9 +113,8 @@ impl Application for WebCamViscaIPApp {
                     (Some(Message::AdminChannelReady(sender)), AppSubscrState::Ready(receiver))
                 }
                 AppSubscrState::Ready(mut receiver) => {
-                    use iced_native::futures::StreamExt;
                         // Read next input sent from `Application`
-                    let ev = receiver.select_next_some().await;
+                    let ev = receiver.recv().await.expect("can't happen: copy of sender retained");
     
                     match ev {
                         protos::MainEvent::NewViscaCam(ncam, port, bus) => {
@@ -121,6 +127,10 @@ impl Application for WebCamViscaIPApp {
                         },
                         protos::MainEvent::LostViscaConnection(ncam, addr) => {
                             (Some(Message::LostViscaConnection(ncam, addr)),
+                                 AppSubscrState::Ready(receiver))
+                        },
+                        protos::MainEvent::LostViscaCam(ncam) => {
+                            (Some(Message::LostViscaCam(ncam)),
                                  AppSubscrState::Ready(receiver))
                         }
                     }
@@ -144,30 +154,53 @@ impl Application for WebCamViscaIPApp {
     }
 }
 
-async fn initialize_cameras(mut send_main_event: mpsc::Sender<protos::MainEvent>) {
-    presetdb::prepare_preset_db().await.unwrap();
-    let mut ncam: u8 = 0;
-    let mut port: u32 = 5678;
-    for ncamdev in 0..16 {
-        let (cam_chan, bus) = match auto_uvc::AutoCamera::find_camera(ncamdev, ncam).await {
-            Ok(n) => Ok(n),
-            Err(UVIError::IoError(_)) => continue,
-            Err(UVIError::CameraNotFound) => continue,
-            Err(UVIError::CamControlNotFound) => continue,
-            #[cfg(target_os = "windows")]
-            Err(UVIError::NokhwaError(_)) => continue,
-            Err(x) => Err(x)
-        }.unwrap();
-        for _ in 0..10 {
-            match viscaip::init(port, ncam, send_main_event.clone(), cam_chan.clone()).await {
-                Ok(_) => break,
-                Err(UVIError::IoError(e)) if e.kind() == ErrorKind::AddrInUse => port += 1,
-                Err(error) => panic!("Problem opening tcp port: {:?}", error)
+async fn start_camera_activation(send_main_event: mpsc::Sender<protos::MainEvent>) {
+    presetdb::prepare_preset_db().await.expect("problem on db file?");
+    task::spawn(async move {
+        let mut ncams: BTreeMap<u8, u8> = BTreeMap::new();
+        let (send_ncamdead, mut recv_ncamdead) = mpsc::channel(100);
+        loop {
+            for ncamdev in 0..8 {
+                let mut cont = false;
+                for (_, ncamdev2) in ncams.iter() {
+                    if ncamdev == *ncamdev2 { cont = true; }
+                }
+                if cont { continue; }
+                let mut ncam: u8 = 0;
+                for _ in 0..200 {
+                    if !ncams.contains_key(&ncam) {
+                        break;
+                    }
+                    ncam += 1;
+                }
+                let (cam_chan, bus) = match auto_uvc::AutoCamera::find_camera(ncamdev, ncam).await {
+                    Ok(n) => Ok(n),
+                    Err(UVIError::IoError(_)) => continue,
+                    Err(UVIError::CameraNotFound) => continue,
+                    Err(UVIError::CamControlNotFound) => continue,
+                    #[cfg(target_os = "windows")]
+                    Err(UVIError::NokhwaError(_)) => continue,
+                    Err(x) => Err(x)
+                }.unwrap();
+                let mut port: u32 = 5678 + ncam as u32;
+                for _ in 0..20 {
+                    match viscaip::activate_visca_port(port, ncam, bus.clone(), send_main_event.clone(),
+                            cam_chan.clone(), send_ncamdead.clone()).await {
+                        Ok(_) => {
+                            ncams.insert(ncam, ncamdev);
+                            break;
+                        },
+                        Err(UVIError::IoError(e)) if e.kind() == ErrorKind::AddrInUse => port += 1,
+                        Err(error) => panic!("Problem opening tcp port: {:?}", error)
+                    }
+                }
+            }
+            sleep(Duration::from_millis(3000)).await;
+            while let Some(ncamdead) = recv_ncamdead.try_recv().ok() {
+                ncams.remove(&ncamdead);
             }
         }
-        send_main_event.send(protos::MainEvent::NewViscaCam(ncam, port, bus)).await.unwrap();
-        ncam += 1; port += 1;
-    }
+    });
 }
 
 pub fn main() -> iced::Result {

@@ -249,15 +249,18 @@ impl AutoCamera {
     let mut tmr50ms = time::interval(Duration::from_millis(50));
     loop {
       tokio::select! {
-        _ = tmr50ms.tick() => {
-          self.pantilt.periodic_move(&self.cam).await.unwrap();
-          self.zoom.periodic_move(&self.cam).await.unwrap();
-          self.focus.periodic_move(&self.cam).await.unwrap();
+        _ = tmr50ms.tick() => { // ignore errors here... too noisy
+          self.pantilt.periodic_move(&self.cam).await.ok();
+          self.zoom.periodic_move(&self.cam).await.ok();
+          self.focus.periodic_move(&self.cam).await.ok();
         },
         Some(ev) = recv_cam_chan.recv() => {
           //println!("Ev: {:?}", ev);
           match self.run_ev(ev).await {
-            Err(e) => println!("auto_uvc run err: {:?}", e),
+            Err(e) => {
+              eprintln!("auto_uvc run err: {:?}", e);
+              break;
+            },
             Ok(run) if run==false => break,
             _ => ()
           }              

@@ -5,7 +5,8 @@ use tokio::sync::oneshot;
 pub enum MainEvent {
   NewViscaCam(u8, u32, String),
   NewViscaConnection(u8, net::SocketAddr),
-  LostViscaConnection(u8, net::SocketAddr)
+  LostViscaConnection(u8, net::SocketAddr),
+  LostViscaCam(u8)
 }
 
 #[derive(Debug)]

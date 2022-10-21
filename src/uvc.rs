@@ -25,9 +25,9 @@ impl fmt::Display for CamControl {
             CamControl::TiltAbsolute => write!(f, "tilt_absolute"),
             CamControl::ZoomAbsolute => write!(f, "zoom_absolute"),
             CamControl::FocusAbsolute => write!(f, "focus_absolute"),
-            CamControl::FocusAuto => write!(f, "focus_auto"),
+            CamControl::FocusAuto => write!(f, "focus_automatic_continuous"),
             CamControl::WhiteBalanceTemperature => write!(f, "white_balance_temperature"),
-            CamControl::WhiteBalanceTemperatureAuto => write!(f, "white_balance_temperature_auto"),
+            CamControl::WhiteBalanceTemperatureAuto => write!(f, "white_balance_automatic"),
         }
     }
 }
@@ -64,17 +64,18 @@ mod uvci {
     use std::collections::HashMap;
     use tokio::sync::{mpsc,oneshot};
     use tokio::task;
+    use super::*;
     
     pub struct CamInterno {
         dev: Device,
-        ctrls: HashMap<super::CamControl, super::Description>
+        ctrls: HashMap<CamControl, Description>
     }
 
     use crate::uvierror::UVIError;
     use v4l::control;
     use v4l::capability;
 
-    impl super::CamControl {
+    impl CamControl {
         fn lowercase_cam_control_name(name: &str) -> String {
             let mut name_ = String::new();
             let mut part = String::new();
@@ -92,12 +93,12 @@ mod uvci {
             return name_;
         }
         
-        const VALUES: &'static [Self] = &[super::CamControl::PanAbsolute, super::CamControl::TiltAbsolute, 
-            super::CamControl::ZoomAbsolute, super::CamControl::FocusAbsolute, super::CamControl::FocusAuto,
-            super::CamControl::WhiteBalanceTemperature, super::CamControl::WhiteBalanceTemperatureAuto];
-        fn find(name: &str) -> Option<super::CamControl> {
-            let lwrcase = super::CamControl::lowercase_cam_control_name(name);
-            for cam_control in super::CamControl::VALUES.iter() {
+        const VALUES: &'static [Self] = &[CamControl::PanAbsolute, CamControl::TiltAbsolute, 
+            CamControl::ZoomAbsolute, CamControl::FocusAbsolute, CamControl::FocusAuto,
+            CamControl::WhiteBalanceTemperature, CamControl::WhiteBalanceTemperatureAuto];
+        fn find(name: &str) -> Option<CamControl> {
+            let lwrcase = CamControl::lowercase_cam_control_name(name);
+            for cam_control in CamControl::VALUES.iter() {
                 if format!("{}", cam_control) == lwrcase {
                     return Some(*cam_control);
                 }
@@ -119,15 +120,15 @@ mod uvci {
             ctrls: HashMap::new()
         };
         for control in controls {
-            match super::CamControl::find(&control.name) {
+            match CamControl::find(&control.name) {
                 None => (),
                 Some(controle) => {
                     let typ = match control.typ {
-                        control::Type::Integer => super::ControlType::Integer,
-                        control::Type::Boolean => super::ControlType::Boolean,
+                        control::Type::Integer => ControlType::Integer,
+                        control::Type::Boolean => ControlType::Boolean,
                         _ => break
                     };
-                    let descr = super::Description {
+                    let descr = Description {
                         id: control.id,
                         typ: typ,
                         name: control.name,
@@ -144,10 +145,10 @@ mod uvci {
     }
 
     impl CamInterno {
-        fn get_ctrl_descr(&self, camctrl: super::CamControl) -> Result<&super::Description, UVIError> {
+        fn get_ctrl_descr(&self, camctrl: CamControl) -> Result<&Description, UVIError> {
             self.ctrls.get(&camctrl).ok_or(UVIError::CamControlNotFound)
         }
-        fn set_ctrl(&self, camctrl: super::CamControl, vl: i64) -> Result<(), UVIError> {
+        fn set_ctrl(&self, camctrl: CamControl, vl: i64) -> Result<(), UVIError> {
             let ctrl = self.get_ctrl_descr(camctrl)?;
             self.dev.set_control(control::Control {
                 id: ctrl.id,
@@ -155,7 +156,7 @@ mod uvci {
             })?;
             Ok(())
         }
-        fn get_ctrl(&self, camctrl: super::CamControl) -> Result<i64, UVIError> {
+        fn get_ctrl(&self, camctrl: CamControl) -> Result<i64, UVIError> {
             let ctrl = self.get_ctrl_descr(camctrl)?;
             let val = self.dev.control(ctrl.id)?.value;
             match val {
@@ -165,27 +166,29 @@ mod uvci {
                 _ => Err(UVIError::UnknownCameraControlValue)
             }
         }
-        pub async fn run_command(&mut self, ev: super::UVCCmd) {
+        pub async fn run_command(&mut self, ev: UVCCmd) {
             match ev {
-                super::UVCCmd::GetCtrlDescr(ctrlname, s) => {
-                    s.send(self.get_ctrl_descr(ctrlname).map(|d| d.clone())).unwrap();
+                UVCCmd::GetCtrlDescr(ctrlname, s) => {
+                    s.send(self.get_ctrl_descr(ctrlname).map(|d| d.clone())).ok();
                 },
-                super::UVCCmd::SetCtrl(ctrlname, vl, s) => {
-                    s.send(self.set_ctrl(ctrlname, vl)).unwrap();
+                UVCCmd::SetCtrl(ctrlname, vl, s) => {
+                    s.send(self.set_ctrl(ctrlname, vl)).ok();
                 },
-                super::UVCCmd::GetCtrl(ctrlname, s) => {
-                    s.send(self.get_ctrl(ctrlname)).unwrap();
+                UVCCmd::GetCtrl(ctrlname, s) => {
+                    s.send(self.get_ctrl(ctrlname)).ok();
                 } 
             }
         }
     }
     pub fn run_handler(ncam: u8, send_find: oneshot::Sender<Result<(String,String),UVIError>>,
-            mut recv_cmd: mpsc::Receiver<super::UVCCmd>) {
+            mut recv_cmd: mpsc::Receiver<UVCCmd>) {
         task::spawn(async move {
             match find_camera(ncam).await {
-                Err(e) => send_find.send(Err(e)).unwrap(),
+                Err(e) => {
+                    send_find.send(Err(e)).ok();
+                },
                 Ok((mut cam, card, bus)) => {
-                    send_find.send(Ok((card, bus))).unwrap();
+                    send_find.send(Ok((card, bus))).ok();
                     while let Some(ev) = recv_cmd.recv().await {
                         cam.run_command(ev).await;
                     }
@@ -203,10 +206,11 @@ mod uvci {
     use nokhwa::KnownCameraControls::*;
     use tokio::sync::{mpsc,oneshot};
     use std::thread;
+    use super::*;
 
     pub struct CamInterno {
         dev: nokhwa::Camera,
-        ctrls: HashMap<super::CamControl, super::Description>
+        ctrls: HashMap<CamControl, Description>
     }
 
     pub fn find_camera(ncam: u8) -> Result<(CamInterno, String, String), UVIError> {
@@ -219,8 +223,8 @@ mod uvci {
         for (kcontrol, control) in &controls {
             match kcontrol {
                 Pan => {
-                    ctrls.insert(super::CamControl::PanAbsolute, super::Description {
-                        typ: super::ControlType::Integer,
+                    ctrls.insert(CamControl::PanAbsolute, Description {
+                        typ: ControlType::Integer,
                         kcontrol: *kcontrol,
                         minimum: (control.minimum_value()*3600).into(),
                         maximum: (control.maximum_value()*3600).into(),
@@ -230,8 +234,8 @@ mod uvci {
                     });
                 },
                 Tilt => {
-                    ctrls.insert(super::CamControl::TiltAbsolute, super::Description {
-                        typ: super::ControlType::Integer,
+                    ctrls.insert(CamControl::TiltAbsolute, Description {
+                        typ: ControlType::Integer,
                         kcontrol: *kcontrol,
                         minimum: (control.minimum_value()*3600).into(),
                         maximum: (control.maximum_value()*3600).into(),
@@ -241,8 +245,8 @@ mod uvci {
                     });
                 },
                 Zoom => {
-                    ctrls.insert(super::CamControl::ZoomAbsolute, super::Description {
-                        typ: super::ControlType::Integer,
+                    ctrls.insert(CamControl::ZoomAbsolute, Description {
+                        typ: ControlType::Integer,
                         kcontrol: *kcontrol,
                         minimum: control.minimum_value().into(),
                         maximum: control.maximum_value().into(),
@@ -252,8 +256,8 @@ mod uvci {
                     });
                 },
                 Focus => {
-                    ctrls.insert(super::CamControl::FocusAbsolute, super::Description {
-                        typ: super::ControlType::Integer,
+                    ctrls.insert(CamControl::FocusAbsolute, Description {
+                        typ: ControlType::Integer,
                         kcontrol: *kcontrol,
                         minimum: control.minimum_value().into(),
                         maximum: control.maximum_value().into(),
@@ -261,8 +265,8 @@ mod uvci {
                         step: control.step() as u64,
                         default: control.default().into(),
                     });
-                    ctrls.insert(super::CamControl::FocusAuto, super::Description {
-                        typ: super::ControlType::Boolean,
+                    ctrls.insert(CamControl::FocusAuto, Description {
+                        typ: ControlType::Boolean,
                         kcontrol: *kcontrol,
                         minimum: 0,
                         maximum: 1,
@@ -272,8 +276,8 @@ mod uvci {
                     });
                 },        
                 WhiteBalance => {
-                    ctrls.insert(super::CamControl::WhiteBalanceTemperature, super::Description {
-                        typ: super::ControlType::Integer,
+                    ctrls.insert(CamControl::WhiteBalanceTemperature, Description {
+                        typ: ControlType::Integer,
                         kcontrol: *kcontrol,
                         minimum: control.minimum_value().into(),
                         maximum: control.maximum_value().into(),
@@ -281,8 +285,8 @@ mod uvci {
                         step: control.step() as u64,
                         default: control.default().into(),
                     });
-                    ctrls.insert(super::CamControl::WhiteBalanceTemperatureAuto, super::Description {
-                        typ: super::ControlType::Boolean,
+                    ctrls.insert(CamControl::WhiteBalanceTemperatureAuto, Description {
+                        typ: ControlType::Boolean,
                         kcontrol: *kcontrol,
                         minimum: 0,
                         maximum: 1,
@@ -296,7 +300,7 @@ mod uvci {
                 _ => ()
             }
         }
-        if !ctrls.contains_key(&super::CamControl::PanAbsolute) || !ctrls.contains_key(&super::CamControl::TiltAbsolute) {
+        if !ctrls.contains_key(&CamControl::PanAbsolute) || !ctrls.contains_key(&CamControl::TiltAbsolute) {
             return Err(UVIError::CameraNotFound);
         }
         let cam = CamInterno {
@@ -307,34 +311,34 @@ mod uvci {
     }
 
     impl CamInterno {
-        pub fn get_ctrl_descr(&self, camctrl: super::CamControl) -> Result<&super::Description, UVIError> {
+        pub fn get_ctrl_descr(&self, camctrl: CamControl) -> Result<&Description, UVIError> {
             self.ctrls.get(&camctrl).ok_or(UVIError::CamControlNotFound)
         }
-        pub fn set_ctrl(&mut self, camctrl: super::CamControl, mut vl: i64) -> Result<(), UVIError> {
+        pub fn set_ctrl(&mut self, camctrl: CamControl, mut vl: i64) -> Result<(), UVIError> {
             let ctrldescr = self.get_ctrl_descr(camctrl)?;
             let mut ctrl = self.dev.camera_control(ctrldescr.kcontrol)?;
             match ctrldescr.typ {
-                super::ControlType::Integer => {
+                ControlType::Integer => {
                     if ctrldescr.sec2degree { vl /= 3600; }
                     ctrl.set_value(vl as i32)?;
                 },
-                super::ControlType::Boolean => {
+                ControlType::Boolean => {
                     ctrl.set_active(if vl != 0 {true} else {false});
                 }
             }
             self.dev.set_camera_control(ctrl)?;
             Ok(())
         } 
-        pub fn get_ctrl(&self, camctrl: super::CamControl) -> Result<i64, UVIError> {
+        pub fn get_ctrl(&self, camctrl: CamControl) -> Result<i64, UVIError> {
             let ctrldescr = self.get_ctrl_descr(camctrl)?;
             let res = self.dev.camera_control(ctrldescr.kcontrol)?;
             match ctrldescr.typ {
-                super::ControlType::Integer => {
+                ControlType::Integer => {
                     let mut vl = res.value().into();
                     if ctrldescr.sec2degree { vl *= 3600; }
                     Ok(vl)
                 },
-                super::ControlType::Boolean => {
+                ControlType::Boolean => {
                     match res.flag() {
                         nokhwa::KnownCameraControlFlag::Manual => Ok(0),
                         nokhwa::KnownCameraControlFlag::Automatic => Ok(1)
@@ -343,27 +347,29 @@ mod uvci {
             }
         } 
 
-        pub fn run_command(&mut self, ev: super::UVCCmd) {
+        pub fn run_command(&mut self, ev: UVCCmd) {
             match ev {
-                super::UVCCmd::GetCtrlDescr(camctrl, s) => {
-                    s.send(self.get_ctrl_descr(camctrl).map(|d| d.clone())).unwrap();
+                UVCCmd::GetCtrlDescr(camctrl, s) => {
+                    s.send(self.get_ctrl_descr(camctrl).map(|d| d.clone())).ok();
                 },
-                super::UVCCmd::SetCtrl(camctrl, vl, s) => {
-                    s.send(self.set_ctrl(camctrl, vl)).unwrap();
+                UVCCmd::SetCtrl(camctrl, vl, s) => {
+                    s.send(self.set_ctrl(camctrl, vl)).ok();
                 },
-                super::UVCCmd::GetCtrl(camctrl, s) => {
-                    s.send(self.get_ctrl(camctrl)).unwrap();
+                UVCCmd::GetCtrl(camctrl, s) => {
+                    s.send(self.get_ctrl(camctrl)).ok();
                 } 
             }
         }
     }
     pub fn run_handler(ncam: u8, send_find: oneshot::Sender<Result<(String,String),UVIError>>,
-            mut recv_cmd: mpsc::Receiver<super::UVCCmd>) {
+            mut recv_cmd: mpsc::Receiver<UVCCmd>) {
         thread::spawn(move || {
             match find_camera(ncam) {
-                Err(e) => send_find.send(Err(e)).unwrap(),
+                Err(e) => {
+                    send_find.send(Err(e)).ok();
+                },
                 Ok((mut cam, card, bus)) => {
-                    send_find.send(Ok((card, bus))).unwrap();
+                    send_find.send(Ok((card, bus))).ok();
                     while let Some(ev) = recv_cmd.blocking_recv() {
                         cam.run_command(ev);
                     }

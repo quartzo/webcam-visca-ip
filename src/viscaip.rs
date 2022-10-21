@@ -1,11 +1,10 @@
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use tokio::task;
-use tokio::sync::{mpsc, oneshot};
+use tokio::select;
+use tokio::sync::{mpsc, oneshot, broadcast};
 use crate::uvierror::UVIError;
 use crate::protos;
-use iced_native::futures::channel;
-use iced_native::futures::SinkExt;
 
 /* references:
 - https://www.epiphan.com/userguides/LUMiO12x/Content/UserGuides/PTZ/3-operation/VISCAcommands.htm
@@ -53,8 +52,9 @@ fn list_to_hex(l: &[u8]) -> String {
 struct ViscaIpCon {
     ncam: u8,
     stream: TcpStream,
-    main_chan: channel::mpsc::Sender<protos::MainEvent>,
-    cam_chan: mpsc::UnboundedSender<protos::CamCmd>
+    main_chan: mpsc::Sender<protos::MainEvent>,
+    cam_chan: mpsc::UnboundedSender<protos::CamCmd>,
+    recvkill: broadcast::Receiver<()>
 }
 
 impl ViscaIpCon {
@@ -71,27 +71,31 @@ impl ViscaIpCon {
         self.main_chan.send(protos::MainEvent::NewViscaConnection(self.ncam, 
             self.stream.peer_addr()?)).await.map_err(|_x| UVIError::AsyncChannelClosed)?;
         let mut buf = Vec::new();
+        let mut buf2 = vec![0u8;256];
         loop {
-            let mut buf2 = vec![0u8;256];
-            let n = match self.stream.read(&mut buf2).await {
-                Ok(n) if n == 0 => break,
-                Ok(n) => n,
-                Err(_e) => break
-            };
-            buf.extend_from_slice(&mut buf2[..n]);
-            let mut i = 0;
-            for p in 0..buf.len() {
-                if buf[p] == 0xFFu8 {
-                    match self.data_received(&buf[i..p]).await {
-                        Ok(()) => (),
-                        Err(e) => println!("Bad data received: {}", e)
+            tokio::select! {
+                _ = self.recvkill.recv() => {
+                    break;
+                },
+                read = self.stream.read(&mut buf2) => {
+                    let n = match read {
+                        Ok(n) if n == 0 => break,
+                        Ok(n) => n,
+                        Err(_e) => break
+                    };
+                    buf.extend_from_slice(&mut buf2[..n]);
+                    let mut i = 0;
+                    for p in 0..buf.len() {
+                        if buf[p] == 0xFFu8 {
+                            self.data_received(&buf[i..p]).await?;
+                            i = p+1;
+                        }
                     }
-                    i = p+1;
+                    buf = buf[i..].to_vec();
+                    if buf.len() > 200 {
+                        break;
+                    }        
                 }
-            }
-            buf = buf[i..].to_vec();
-            if buf.len() > 200 {
-                break;
             }
         }
         self.main_chan.send(protos::MainEvent::LostViscaConnection(self.ncam, 
@@ -266,24 +270,42 @@ impl ViscaIpCon {
     }
 }
 
-
-pub async fn init(port: u32, ncam: u8, main_chan: channel::mpsc::Sender<protos::MainEvent>, 
-        cam_chan: mpsc::UnboundedSender<protos::CamCmd>) -> Result<(), UVIError> {
+pub async fn activate_visca_port(port: u32, ncam: u8, bus: String, main_chan: mpsc::Sender<protos::MainEvent>, 
+        cam_chan: mpsc::UnboundedSender<protos::CamCmd>, ncamdead: mpsc::Sender<u8>) -> Result<(), UVIError> {
     let listener = TcpListener::bind(format!("127.0.0.1:{}",port)).await?;
     //println!("Listening on {}", listener.local_addr()?);
     task::spawn(async move {
+        main_chan.send(protos::MainEvent::NewViscaCam(ncam, port, bus)).await.ok();
+        let (sendkill, mut recvkill) = broadcast::channel(1);
         loop {
-            let (socket, _socket_addr) = listener.accept().await.expect("Bad accept?");
-            let mut v = ViscaIpCon {
-                ncam: ncam,
-                stream: socket,
-                main_chan: main_chan.clone(),
-                cam_chan: cam_chan.clone(),
-            };
-            task::spawn(async move {
-                v.process().await.unwrap();
-            });
+            select! {
+                _ = recvkill.recv() => {
+                    break;
+                },
+                acc = listener.accept() => {
+                    let (socket, _socket_addr) = acc.expect("Bad accept?");
+                    let mut v = ViscaIpCon {
+                        ncam: ncam,
+                        stream: socket,
+                        main_chan: main_chan.clone(),
+                        cam_chan: cam_chan.clone(),
+                        recvkill: sendkill.subscribe()
+                    };
+                    let sendkill = sendkill.clone();
+                    task::spawn(async move {
+                        match v.process().await {
+                            Err(e) => {
+                                eprintln!("Closing ViscaIP connection for error: {}", e);
+                                sendkill.send(()).ok();
+                            }
+                            _ => ()
+                        }
+                    });
+                }
+            }
         }
+        main_chan.send(protos::MainEvent::LostViscaCam(ncam)).await.ok();
+        ncamdead.send(ncam).await.ok();
     });
     Ok(())
 }
