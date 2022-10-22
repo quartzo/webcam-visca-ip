@@ -13,6 +13,7 @@ dirs = "4.0.0"
 iced_native = "0.5.1"
 futures = "0.3.24"
 tokio-stream = "0.1.10"
+lazy_static = "1.4.0"
 
 [target.'cfg(unix)'.dependencies]
 v4l = "0.13.0"

@@ -65,6 +65,7 @@ mod uvci {
     use tokio::sync::{mpsc,oneshot};
     use tokio::task;
     use super::*;
+    use lazy_static::lazy_static;
     
     pub struct CamInterno {
         dev: Device,
@@ -75,36 +76,18 @@ mod uvci {
     use v4l::control;
     use v4l::capability;
 
-    impl CamControl {
-        fn lowercase_cam_control_name(name: &str) -> String {
-            let mut name_ = String::new();
-            let mut part = String::new();
-            for c in format!("{}_", name).chars() {
-                if c.is_ascii_alphanumeric() {
-                    part.push(c.to_ascii_lowercase());
-                } else {
-                    if part.len() > 0 {
-                        if name_.len() > 0 { name_.push('_'); }
-                        name_.push_str(&part);
-                        part = String::new();
-                    }
-                }
-            }
-            return name_;
-        }
-        
-        const VALUES: &'static [Self] = &[CamControl::PanAbsolute, CamControl::TiltAbsolute, 
-            CamControl::ZoomAbsolute, CamControl::FocusAbsolute, CamControl::FocusAuto,
-            CamControl::WhiteBalanceTemperature, CamControl::WhiteBalanceTemperatureAuto];
-        fn find(name: &str) -> Option<CamControl> {
-            let lwrcase = CamControl::lowercase_cam_control_name(name);
-            for cam_control in CamControl::VALUES.iter() {
-                if format!("{}", cam_control) == lwrcase {
-                    return Some(*cam_control);
-                }
-            }
-            None
-        }
+    lazy_static! {
+        static ref CTRLIDMAP: HashMap<u32, CamControl> = {
+            let mut m = HashMap::new();
+            m.insert(0x009a0908, CamControl::PanAbsolute);
+            m.insert(0x009a0909, CamControl::TiltAbsolute);
+            m.insert(0x009a090d, CamControl::ZoomAbsolute);
+            m.insert(0x009a090a, CamControl::FocusAbsolute);
+            m.insert(0x009a090c, CamControl::FocusAuto);
+            m.insert(0x0098091a, CamControl::WhiteBalanceTemperature);
+            m.insert(0x0098090c, CamControl::WhiteBalanceTemperatureAuto);
+            m
+        };
     }
 
     pub async fn find_camera(ncam: u8) -> Result<(CamInterno,String,String), UVIError> {
@@ -120,25 +103,22 @@ mod uvci {
             ctrls: HashMap::new()
         };
         for control in controls {
-            match CamControl::find(&control.name) {
-                None => (),
-                Some(controle) => {
-                    let typ = match control.typ {
-                        control::Type::Integer => ControlType::Integer,
-                        control::Type::Boolean => ControlType::Boolean,
-                        _ => break
-                    };
-                    let descr = Description {
-                        id: control.id,
-                        typ: typ,
-                        name: control.name,
-                        minimum: control.minimum,
-                        maximum: control.maximum,
-                        step: control.step,
-                        default: control.default,
-                    };
-                    cam.ctrls.insert(controle, descr);
-                }
+            if let Some(control_e) = CTRLIDMAP.get(&control.id) {
+                let typ = match control.typ {
+                    control::Type::Integer => ControlType::Integer,
+                    control::Type::Boolean => ControlType::Boolean,
+                    _ => break
+                };
+                let descr = Description {
+                    id: control.id,
+                    typ: typ,
+                    name: control.name,
+                    minimum: control.minimum,
+                    maximum: control.maximum,
+                    step: control.step,
+                    default: control.default,
+                };
+                cam.ctrls.insert(*control_e, descr);
             }
         }
         Ok((cam, caps.card, caps.bus))
