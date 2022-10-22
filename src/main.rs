@@ -19,7 +19,7 @@ use iced_native::subscription::{self, Subscription};
 //use iced_native::futures::channel::mpsc;
 use tokio::sync::mpsc;
 use tokio::task;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, Instant, sleep_until};
 
 #[derive(Default, Debug, Clone)]
 pub struct CamAppState {
@@ -154,52 +154,101 @@ impl Application for WebCamViscaIPApp {
     }
 }
 
+struct ActiveCams {
+    ncams: BTreeMap<u8, u8> // sequencial detected cams -> oper. system cam
+}
+impl ActiveCams {
+    fn new() -> ActiveCams {
+        ActiveCams{ncams:BTreeMap::new()}
+    }
+    fn cam_dev_already_active(&self, ncamdev: u8) -> bool {
+        for (_, ncamdev2) in self.ncams.iter() {
+            if ncamdev == *ncamdev2 { return true; }
+        }
+        false
+    }
+    fn find_first_cam_free(&self) -> Option<u8> {
+        let mut ncam: u8 = 0;
+        loop {
+            if !self.ncams.contains_key(&ncam) { return Some(ncam); }
+            ncam += 1;
+            if ncam > 100 { return None }
+        }
+    }
+    fn cam_active(&mut self, ncam: u8, ncamdev: u8) {
+        self.ncams.insert(ncam, ncamdev);
+    }
+    fn cam_dead(&mut self, ncam: u8){
+        self.ncams.remove(&ncam);
+    }
+}
+
+async fn try_to_activate_all_cams(ncams: &mut ActiveCams, send_main_event: &mpsc::Sender<protos::MainEvent>,
+        send_ncamdead: &mpsc::Sender<u8>) -> Result<(),UVIError> {
+    'nextcamdev: for ncamdev in 0..8 {
+        if ncams.cam_dev_already_active(ncamdev) { continue 'nextcamdev; }
+        let (cam_chan, bus) = match auto_uvc::AutoCamera::find_camera(ncamdev).await {
+            Ok(n) => Ok(n),
+            Err(UVIError::IoError(_)) => continue,
+            Err(UVIError::CameraNotFound) => continue,
+            Err(UVIError::CamControlNotFound) => continue,
+            #[cfg(target_os = "windows")]
+            Err(UVIError::NokhwaError(_)) => continue,
+            Err(x) => Err(x)
+        }?;
+        let ncam = if let Some(x) = ncams.find_first_cam_free() { x } else {
+            continue 'nextcamdev
+        };
+        cam_chan.send(protos::CamCmd::SetPresetNcam(ncam)).ok();
+        let mut port: u32 = 5678 + ncam as u32;
+        loop {
+            match viscaip::activate_visca_port(port, ncam, send_main_event.clone(),
+                    cam_chan.clone(), send_ncamdead.clone()).await {
+                Ok(_) => {
+                    ncams.cam_active(ncam, ncamdev);
+                    send_main_event.send(protos::MainEvent::NewViscaCam(ncam, port, bus)).await.ok();
+                    break;
+                },
+                Err(UVIError::IoError(e)) if e.kind() == ErrorKind::AddrInUse => (),
+                Err(error) => {
+                    eprintln!("Problem opening tcp port: {:?}", error);
+                    continue 'nextcamdev;
+                }
+            }
+            port += 1;
+            if port >= 5700 { 
+                eprintln!("No tcp ports available");
+                continue 'nextcamdev;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn continuous_activation_all_cams(send_main_event: mpsc::Sender<protos::MainEvent>) {
+    let mut ncams = ActiveCams::new();
+    let (send_ncamdead, mut recv_ncamdead) = mpsc::channel(100);
+    loop {
+        try_to_activate_all_cams(&mut ncams, &send_main_event, &send_ncamdead).await.unwrap();
+        let until = Instant::now() + Duration::from_millis(3000);
+        loop {
+            tokio::select! {
+                _ = sleep_until(until) => {
+                    break;
+                },
+                Some(ncamdead) = recv_ncamdead.recv() => {
+                    send_main_event.send(protos::MainEvent::LostViscaCam(ncamdead)).await.ok();
+                    ncams.cam_dead(ncamdead);
+                }
+            }
+        }
+    }
+}
+
 async fn start_camera_activation(send_main_event: mpsc::Sender<protos::MainEvent>) {
     presetdb::prepare_preset_db().await.expect("problem on db file?");
     task::spawn(async move {
-        let mut ncams: BTreeMap<u8, u8> = BTreeMap::new();
-        let (send_ncamdead, mut recv_ncamdead) = mpsc::channel(100);
-        loop {
-            for ncamdev in 0..8 {
-                let mut cont = false;
-                for (_, ncamdev2) in ncams.iter() {
-                    if ncamdev == *ncamdev2 { cont = true; }
-                }
-                if cont { continue; }
-                let mut ncam: u8 = 0;
-                for _ in 0..200 {
-                    if !ncams.contains_key(&ncam) {
-                        break;
-                    }
-                    ncam += 1;
-                }
-                let (cam_chan, bus) = match auto_uvc::AutoCamera::find_camera(ncamdev, ncam).await {
-                    Ok(n) => Ok(n),
-                    Err(UVIError::IoError(_)) => continue,
-                    Err(UVIError::CameraNotFound) => continue,
-                    Err(UVIError::CamControlNotFound) => continue,
-                    #[cfg(target_os = "windows")]
-                    Err(UVIError::NokhwaError(_)) => continue,
-                    Err(x) => Err(x)
-                }.unwrap();
-                let mut port: u32 = 5678 + ncam as u32;
-                for _ in 0..20 {
-                    match viscaip::activate_visca_port(port, ncam, bus.clone(), send_main_event.clone(),
-                            cam_chan.clone(), send_ncamdead.clone()).await {
-                        Ok(_) => {
-                            ncams.insert(ncam, ncamdev);
-                            break;
-                        },
-                        Err(UVIError::IoError(e)) if e.kind() == ErrorKind::AddrInUse => port += 1,
-                        Err(error) => panic!("Problem opening tcp port: {:?}", error)
-                    }
-                }
-            }
-            sleep(Duration::from_millis(3000)).await;
-            while let Some(ncamdead) = recv_ncamdead.try_recv().ok() {
-                ncams.remove(&ncamdead);
-            }
-        }
+        continuous_activation_all_cams(send_main_event).await
     });
 }
 

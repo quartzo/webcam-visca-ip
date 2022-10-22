@@ -201,9 +201,8 @@ impl WhiteBal {
 
 #[derive(Debug)]
 pub struct AutoCamera {
-  ncam: u8,
   cam: uvc::Camera,
-  presetdb: presetdb::PresetDB,
+  presetdb: Option<presetdb::PresetDB>,
   pantilt: PanTilt,
   zoom: Zoom,
   focus: Focus,
@@ -225,7 +224,7 @@ pub struct Preset {
 }
 
 impl AutoCamera {
-  pub async fn find_camera(ndev: u8, ncam: u8) -> Result<(mpsc::UnboundedSender<protos::CamCmd>,String), UVIError> {
+  pub async fn find_camera(ndev: u8) -> Result<(mpsc::UnboundedSender<protos::CamCmd>,String), UVIError> {
     let cam = uvc::find_camera(ndev).await?;
     let pantilt = PanTilt::init(&cam).await?;
     let zoom = Zoom::init(&cam).await?;
@@ -234,9 +233,8 @@ impl AutoCamera {
     let (cam_chan, recv_cam_chan) = mpsc::unbounded_channel();
     let bus = cam.bus.to_string();
     let acam = AutoCamera {
-      ncam: ncam,
       cam: cam,
-      presetdb: presetdb::connect_preset_db()?,
+      presetdb: None,
       pantilt: pantilt,
       zoom: zoom,
       focus: focus,
@@ -271,8 +269,11 @@ impl AutoCamera {
   }
   async fn run_ev(&mut self, ev: protos::CamCmd) -> Result<bool,UVIError> {
     match ev {
+      protos::CamCmd::SetPresetNcam(ncam) => {
+        self.presetdb = Some(presetdb::connect_preset_db(ncam)?);
+      },
       protos::CamCmd::ResetPreset(npreset) => {
-        self.presetdb.clear(self.ncam, npreset)?;
+        self.presetdb.as_ref().ok_or(UVIError::CameraNotFound)?.clear(npreset)?;
       },
       protos::CamCmd::RecordPreset(npreset) => {
         let preset = Preset {
@@ -284,10 +285,10 @@ impl AutoCamera {
           whitebalauto: if self.whitebal.auto.value > 0 {true} else {false},
           temperature: self.whitebal.temp.value
         };
-        self.presetdb.record(self.ncam, npreset, preset)?;
+        self.presetdb.as_ref().ok_or(UVIError::CameraNotFound)?.record(npreset, preset)?;
       },
       protos::CamCmd::RecoverPreset(npreset) => {
-        let opreset = self.presetdb.recover(self.ncam, npreset)?;
+        let opreset = self.presetdb.as_ref().ok_or(UVIError::CameraNotFound)?.recover(npreset)?;
         match opreset {
           Some(preset) => {
             self.pantilt.absolute_move(&self.cam, preset.pan, preset.tilt).await?;

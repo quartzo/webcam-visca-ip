@@ -6,7 +6,8 @@ use dirs;
 
 #[derive(Debug)]
 pub struct PresetDB {
-  conn: Connection
+  conn: Connection,
+  ncam: u8
 }
 
 /*
@@ -17,9 +18,19 @@ pub struct Preset {
 }
 */
 
+fn conn_preset_db() -> Result<Connection, UVIError> {
+  let mut path = dirs::config_dir().ok_or(UVIError::BadDirs)?;
+  path.push("webcam-visca-ip");
+  fs::create_dir_all(path.to_str().ok_or(UVIError::BadDirs)?)?;
+  path.push("presets.db");
+  let conn = Connection::open(path.to_str().ok_or(UVIError::BadDirs)?)?;
+  Ok(conn)
+}
+
+
 pub async fn prepare_preset_db() -> Result<(), UVIError> {
-  let conn = connect_preset_db()?;
-  conn.conn.execute(
+  let conn = conn_preset_db()?;
+  conn.execute(
     r#"
     CREATE TABLE IF NOT EXISTS Presets (
       ncam INT, 
@@ -34,40 +45,36 @@ pub async fn prepare_preset_db() -> Result<(), UVIError> {
   Ok(())
 }
 
-pub fn connect_preset_db() -> Result<PresetDB, UVIError> {
-  let mut path = dirs::config_dir().ok_or(UVIError::BadDirs)?;
-  path.push("webcam-visca-ip");
-  fs::create_dir_all(path.to_str().ok_or(UVIError::BadDirs)?)?;
-  path.push("presets.db");
-  let conn = Connection::open(path.to_str().ok_or(UVIError::BadDirs)?)?;
-  Ok(PresetDB {conn:conn})
+pub fn connect_preset_db(ncam: u8) -> Result<PresetDB, UVIError> {
+  let conn = conn_preset_db()?;
+  Ok(PresetDB {conn,ncam})
 }
 
 impl PresetDB {
-  pub fn clear(&self, ncam: u8, npreset: u8) -> Result<(), UVIError> {
+  pub fn clear(&self, npreset: u8) -> Result<(), UVIError> {
     self.conn.execute(
       "DELETE FROM Presets WHERE ncam=?1 AND preset=?2;",
-      (&(ncam as i64), &(npreset as i64)),
+      (&(self.ncam as i64), &(npreset as i64)),
     )?;
     Ok(())
   }
-  pub fn record(&self, ncam: u8, npreset: u8, p: auto_uvc::Preset) -> Result<(), UVIError> {
+  pub fn record(&self, npreset: u8, p: auto_uvc::Preset) -> Result<(), UVIError> {
     self.conn.execute(
       "INSERT OR REPLACE INTO Presets (ncam,preset,
         pan, tilt, zoom,
         focusauto, focus, whitebalauto, temperature) 
         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9);",
-      (&(ncam as i64), &(npreset as i64), &p.pan, &p.tilt, &p.zoom,
+      (&(self.ncam as i64), &(npreset as i64), &p.pan, &p.tilt, &p.zoom,
         &p.focusauto,&p.focus,&p.whitebalauto,&p.temperature),
     )?;
     Ok(())
   }
-  pub fn recover(&self, ncam: u8, npreset: u8) -> Result<Option<auto_uvc::Preset>, UVIError> {
+  pub fn recover(&self, npreset: u8) -> Result<Option<auto_uvc::Preset>, UVIError> {
     match self.conn.query_row(
       "SELECT pan, tilt, zoom,
       focusauto, focus, whitebalauto, temperature 
       FROM Presets WHERE ncam=?1 and preset=?2;",
-      (&(ncam as i64), &(npreset as i64)),
+      (&(self.ncam as i64), &(npreset as i64)),
       |row| {
         Ok(auto_uvc::Preset {
           pan: row.get(0)?,

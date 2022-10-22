@@ -17,6 +17,7 @@ pub struct PanTilt {
 
 #[derive(Debug)]
 pub enum CamCmd {
+  SetPresetNcam(u8),
   ResetPreset(u8),
   RecordPreset(u8),
   RecoverPreset(u8),

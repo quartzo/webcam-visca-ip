@@ -270,12 +270,11 @@ impl ViscaIpCon {
     }
 }
 
-pub async fn activate_visca_port(port: u32, ncam: u8, bus: String, main_chan: mpsc::Sender<protos::MainEvent>, 
+pub async fn activate_visca_port(port: u32, ncam: u8, main_chan: mpsc::Sender<protos::MainEvent>, 
         cam_chan: mpsc::UnboundedSender<protos::CamCmd>, ncamdead: mpsc::Sender<u8>) -> Result<(), UVIError> {
     let listener = TcpListener::bind(format!("127.0.0.1:{}",port)).await?;
     //println!("Listening on {}", listener.local_addr()?);
     task::spawn(async move {
-        main_chan.send(protos::MainEvent::NewViscaCam(ncam, port, bus)).await.ok();
         let (sendkill, mut recvkill) = broadcast::channel(1);
         loop {
             select! {
@@ -304,7 +303,6 @@ pub async fn activate_visca_port(port: u32, ncam: u8, bus: String, main_chan: mp
                 }
             }
         }
-        main_chan.send(protos::MainEvent::LostViscaCam(ncam)).await.ok();
         ncamdead.send(ncam).await.ok();
     });
     Ok(())
