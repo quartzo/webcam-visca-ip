@@ -11,6 +11,12 @@ mod auto_uvc;
 mod uvierror;
 use crate::uvierror::UVIError;
 use std::io::ErrorKind;
+#[cfg(all(not(feature="uvcmock"), target_os = "linux"))]
+mod uvc_linux;
+#[cfg(all(not(feature="uvcmock"), target_os = "windows"))]
+mod uvc_win;
+#[cfg(feature="uvcmock")]
+mod uvc_mock;
 
 use iced::{
     window, executor, Alignment, Column, Element, Application, Command, Settings, Text, Length

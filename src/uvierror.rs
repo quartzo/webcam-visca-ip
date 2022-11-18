@@ -8,7 +8,7 @@ use nokhwa;
 pub enum UVIError {
   BadDirs,
   CamControlNotFound,
-  #[cfg(target_os = "linux")]
+  #[cfg(all(not(feature="uvcmock"),target_os = "linux"))]
   UnknownCameraControlValue,
   CameraNotFound,
   AsyncChannelClosed,
@@ -24,7 +24,7 @@ impl fmt::Display for UVIError {
     match *self {
       UVIError::BadDirs => write!(f, "Couldn't manipulate config directories"),
       UVIError::CamControlNotFound => write!(f, "This camera control is not available for device"),
-      #[cfg(target_os = "linux")]
+      #[cfg(all(not(feature="uvcmock"),target_os = "linux"))]
       UVIError::UnknownCameraControlValue => write!(f, "This camera control uses unknown value type"),
       UVIError::CameraNotFound => write!(f, "Couldn't access camera device"),
       UVIError::AsyncChannelClosed => write!(f, "Sending to a closed channel"),
