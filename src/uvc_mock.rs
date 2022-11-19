@@ -1,13 +1,14 @@
 use crate::uvierror::UVIError;
 use std::collections::HashMap;
-use std::thread;
 use tokio::sync::{mpsc,oneshot};
+use tokio::task;
 use crate::uvc::{Description, CamControl, ControlType, UVCCmd};
-    
+use tokio::time::{Duration, Instant, sleep_until};
+
 pub struct CamInterno {
-    ncam: u8,
     ctrls: HashMap<CamControl, Description>,
-    memory: HashMap<CamControl, i32>
+    memory: HashMap<CamControl, i32>,
+    changed: bool
 }
 
 pub fn mock_find_camera(ncam: u8) -> Result<(CamInterno, String, String), UVIError> {
@@ -67,9 +68,9 @@ pub fn mock_find_camera(ncam: u8) -> Result<(CamInterno, String, String), UVIErr
         default: 1,
     });
     let cam = CamInterno {
-        ncam,
         ctrls,
-        memory: HashMap::new()
+        memory: HashMap::new(),
+        changed: false
     };
     Ok((cam, card, bus))
 }
@@ -83,11 +84,11 @@ impl CamInterno {
         match ctrldescr.typ {
             ControlType::Integer => {
                 self.memory.insert(camctrl, vl as i32);
-                println!("{} {} {}", self.ncam, camctrl, vl as i32);
+                self.changed = true;
             },
             ControlType::Boolean => {
                 self.memory.insert(camctrl, if vl != 0 { 1 } else { 0 });
-                println!("{} {} {}", self.ncam, camctrl, if vl != 0 {true} else {false});
+                self.changed = true;
             }
         }
         Ok(())
@@ -105,7 +106,7 @@ impl CamInterno {
         }
     } 
 
-    pub fn run_command(&mut self, ev: UVCCmd) {
+    pub async fn run_command(&mut self, ev: UVCCmd) {
         match ev {
             UVCCmd::GetCtrlDescr(camctrl, s) => {
                 s.send(self.get_ctrl_descr(camctrl).map(|d| d.clone())).ok();
@@ -119,17 +120,36 @@ impl CamInterno {
         }
     }
 }
+
 pub fn run_handler(ncam: u8, send_find: oneshot::Sender<Result<(String,String),UVIError>>,
         mut recv_cmd: mpsc::Receiver<UVCCmd>) {
-    thread::spawn(move || {
+    task::spawn(async move {
         match mock_find_camera(ncam) {
             Err(e) => {
                 send_find.send(Err(e)).ok();
             },
             Ok((mut cam, card, bus)) => {
                 send_find.send(Ok((card, bus))).ok();
-                while let Some(ev) = recv_cmd.blocking_recv() {
-                    cam.run_command(ev);
+                loop {
+                    let until = Instant::now() + Duration::from_millis(200);
+                    loop {
+                        tokio::select! {
+                            _ = sleep_until(until) => {
+                                break;
+                            },       
+                            Some(ev) = recv_cmd.recv() => {
+                                cam.run_command(ev).await;
+                            }
+                        }
+                    };
+                    if cam.changed {
+                        cam.changed = false;
+                        let pan = cam.get_ctrl(CamControl::PanAbsolute).unwrap();
+                        let tilt = cam.get_ctrl(CamControl::TiltAbsolute).unwrap();
+                        let zoom = cam.get_ctrl(CamControl::ZoomAbsolute).unwrap();
+                        println!("{: <1$}pan{pan:>7} tilt{tilt:>7} zoom{zoom:>7}", "", 
+                            (ncam*36) as usize, pan=pan, tilt=tilt, zoom=zoom);
+                    }
                 }
             }
         }
