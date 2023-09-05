@@ -202,7 +202,7 @@ impl WhiteBal {
 #[derive(Debug)]
 pub struct AutoCamera {
   cam: uvc::Camera,
-  presetdb: Option<presetdb::PresetDB>,
+  presetdb_ncam: Option<u8>,
   pantilt: PanTilt,
   zoom: Zoom,
   focus: Focus,
@@ -234,7 +234,7 @@ impl AutoCamera {
     let bus = cam.bus.to_string();
     let acam = AutoCamera {
       cam: cam,
-      presetdb: None,
+      presetdb_ncam: None,
       pantilt: pantilt,
       zoom: zoom,
       focus: focus,
@@ -270,10 +270,11 @@ impl AutoCamera {
   async fn run_ev(&mut self, ev: protos::CamCmd) -> Result<bool,UVIError> {
     match ev {
       protos::CamCmd::SetPresetNcam(ncam) => {
-        self.presetdb = Some(presetdb::connect_preset_db(ncam)?);
+        self.presetdb_ncam = Some(ncam);
       },
       protos::CamCmd::ResetPreset(npreset) => {
-        self.presetdb.as_ref().ok_or(UVIError::CameraNotFound)?.clear(npreset)?;
+        let ncam = self.presetdb_ncam.ok_or(UVIError::CameraNotFound)?;
+        presetdb::clear(ncam, npreset).await?;
       },
       protos::CamCmd::RecordPreset(npreset) => {
         let preset = Preset {
@@ -285,10 +286,12 @@ impl AutoCamera {
           whitebalauto: if self.whitebal.auto.value > 0 {true} else {false},
           temperature: self.whitebal.temp.value
         };
-        self.presetdb.as_ref().ok_or(UVIError::CameraNotFound)?.record(npreset, preset)?;
+        let ncam = self.presetdb_ncam.ok_or(UVIError::CameraNotFound)?;
+        presetdb::record(ncam, npreset, preset).await?;
       },
       protos::CamCmd::RecoverPreset(npreset) => {
-        let opreset = self.presetdb.as_ref().ok_or(UVIError::CameraNotFound)?.recover(npreset)?;
+        let ncam = self.presetdb_ncam.ok_or(UVIError::CameraNotFound)?;
+        let opreset = presetdb::recover(ncam, npreset).await?;
         match opreset {
           Some(preset) => {
             self.pantilt.absolute_move(&self.cam, preset.pan, preset.tilt).await?;
