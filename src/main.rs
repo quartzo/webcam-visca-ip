@@ -19,10 +19,10 @@ mod uvc_win;
 mod uvc_mock;
 
 use iced::{
-    window, executor, Alignment, Column, Element, Application, Command, Settings, Text, Length
+    window, executor, Alignment, Element, Application, Command, Settings, Length, Subscription, Theme
 };
-use iced_native::subscription::{self, Subscription};
-//use iced_native::futures::channel::mpsc;
+use iced::widget::{Text, Column};
+
 use tokio::sync::mpsc;
 use tokio::task;
 use tokio::time::{Duration, Instant, sleep_until};
@@ -51,14 +51,16 @@ pub enum Message {
     LostViscaConnection(u8, net::SocketAddr)
 }
 
+#[derive(Debug)]
 enum AppSubscrState {
     Starting,
     Ready(mpsc::Receiver<protos::MainEvent>)
 }
 
 impl Application for WebCamViscaIPApp {
-    type Executor = executor::Default;
     type Message = Message;
+    type Theme = Theme;
+    type Executor = executor::Default;
     type Flags = ();
 
     fn new(_flags: ()) -> (WebCamViscaIPApp, Command<Self::Message>) {
@@ -93,13 +95,13 @@ impl Application for WebCamViscaIPApp {
                 Command::none()
             },
             Message::NewViscaConnection(ncam, _addr) => {
-                let mut cam = &mut self.cams.get_mut(&ncam).expect("ncam not active");
+                let cam = &mut self.cams.get_mut(&ncam).expect("ncam not active");
                 cam.ncnx += 1;
                 //println!("Accepted from: {} ncam: {}", addr, ncam);
                 Command::none()
             },
             Message::LostViscaConnection(ncam, _addr) => {
-                let mut cam = &mut self.cams.get_mut(&ncam).expect("ncam not active");
+                let cam = &mut self.cams.get_mut(&ncam).expect("ncam not active");
                 cam.ncnx -= 1;
                 //println!("Disconnect from: {} ncam: {}", addr, ncam);
                 Command::none()
@@ -111,12 +113,11 @@ impl Application for WebCamViscaIPApp {
         }
     }
     fn subscription(&self) -> Subscription<Message> {
-        struct SomeWorker;
-        subscription::unfold(std::any::TypeId::of::<SomeWorker>(), AppSubscrState::Starting, |state| async move {
+        iced::subscription::unfold("cam actions", AppSubscrState::Starting, |state| async move {
             match state {
                 AppSubscrState::Starting => {
                     let (sender, receiver) = mpsc::channel(100);
-                    (Some(Message::AdminChannelReady(sender)), AppSubscrState::Ready(receiver))
+                    ((Message::AdminChannelReady(sender)), AppSubscrState::Ready(receiver))
                 }
                 AppSubscrState::Ready(mut receiver) => {
                         // Read next input sent from `Application`
@@ -124,19 +125,19 @@ impl Application for WebCamViscaIPApp {
     
                     match ev {
                         protos::MainEvent::NewViscaCam(ncam, port, bus) => {
-                            (Some(Message::NewViscaCam(ncam, port, bus)),
+                            ((Message::NewViscaCam(ncam, port, bus)),
                                  AppSubscrState::Ready(receiver))
                         },
                         protos::MainEvent::NewViscaConnection(ncam, addr) => {
-                            (Some(Message::NewViscaConnection(ncam, addr)),
+                            ((Message::NewViscaConnection(ncam, addr)),
                                  AppSubscrState::Ready(receiver))
                         },
                         protos::MainEvent::LostViscaConnection(ncam, addr) => {
-                            (Some(Message::LostViscaConnection(ncam, addr)),
+                            ((Message::LostViscaConnection(ncam, addr)),
                                  AppSubscrState::Ready(receiver))
                         },
                         protos::MainEvent::LostViscaCam(ncam) => {
-                            (Some(Message::LostViscaCam(ncam)),
+                            ((Message::LostViscaCam(ncam)),
                                  AppSubscrState::Ready(receiver))
                         }
                     }
@@ -144,7 +145,7 @@ impl Application for WebCamViscaIPApp {
             }
         })
     }
-    fn view(&mut self) -> Element<Message> {
+    fn view(&self) -> Element<Message> {
         let mut col = Column::new()
             .padding(20)
             .width(Length::Fill)

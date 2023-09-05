@@ -4,9 +4,10 @@ use crate::uvc::{Description, CamControl, ControlType, UVCCmd};
 use tokio::sync::{mpsc,oneshot};
 use v4l::Device;
 use tokio::task;
-use lazy_static::lazy_static;
 use v4l::control;
 use v4l::capability;
+//use std::sync::Mutex;
+use once_cell::sync::Lazy;
 
 #[derive(Debug,Clone)]
 pub struct DescriptionInt {
@@ -19,19 +20,17 @@ pub struct CamInterno {
     ctrls: HashMap<CamControl, DescriptionInt>
 }
 
-lazy_static! {
-    static ref CTRLIDMAP: HashMap<u32, CamControl> = {
-        let mut m = HashMap::new();
-        m.insert(0x009a0908, CamControl::PanAbsolute);
-        m.insert(0x009a0909, CamControl::TiltAbsolute);
-        m.insert(0x009a090d, CamControl::ZoomAbsolute);
-        m.insert(0x009a090a, CamControl::FocusAbsolute);
-        m.insert(0x009a090c, CamControl::FocusAuto);
-        m.insert(0x0098091a, CamControl::WhiteBalanceTemperature);
-        m.insert(0x0098090c, CamControl::WhiteBalanceTemperatureAuto);
-        m
-    };
-}
+static CTRLIDMAP: Lazy<HashMap<u32, CamControl>> = Lazy::new(|| {
+    let mut m = HashMap::new();
+    m.insert(0x009a0908, CamControl::PanAbsolute);
+    m.insert(0x009a0909, CamControl::TiltAbsolute);
+    m.insert(0x009a090d, CamControl::ZoomAbsolute);
+    m.insert(0x009a090a, CamControl::FocusAbsolute);
+    m.insert(0x009a090c, CamControl::FocusAuto);
+    m.insert(0x0098091a, CamControl::WhiteBalanceTemperature);
+    m.insert(0x0098090c, CamControl::WhiteBalanceTemperatureAuto);
+    m
+});
 
 pub async fn find_camera(ncam: u8) -> Result<(CamInterno,String,String), UVIError> {
     let path = format!("/dev/video{}",ncam);

@@ -3,10 +3,44 @@ use crate::auto_uvc;
 use crate::uvierror::UVIError;
 use std::fs;
 use dirs;
+use std::cell::OnceCell;
+use std::rc::Rc;
+
+thread_local! {
+  static THCONN: OnceCell<Rc<Connection>> = OnceCell::new();
+}
+
+fn prepare_conn() -> Result<Rc<Connection>, UVIError> {
+  THCONN.with(|thconn: &OnceCell<Rc<Connection>>| {
+    if let Some(rc_conn) = thconn.get() {
+      return Ok(rc_conn.clone());
+    }
+    let mut path = dirs::config_dir().ok_or(UVIError::BadDirs)?;
+    path.push("webcam-visca-ip");
+    fs::create_dir_all(path.to_str().ok_or(UVIError::BadDirs)?)?;
+    path.push("presets.db");
+    let conn = Connection::open(path.to_str().ok_or(UVIError::BadDirs)?)?;
+
+    conn.execute(
+      r#"
+      CREATE TABLE IF NOT EXISTS Presets (
+        ncam INT, 
+        preset INT, 
+        pan INT, tilt INT, zoom INT,
+        focusauto BOOL, focus INT,
+        whitebalauto BOOL, temperature INT,
+        PRIMARY KEY (ncam, preset)
+      );"#,
+      (),
+    )?;
+    let rc_conn = Rc::new(conn);
+    thconn.set(rc_conn.clone()).unwrap();
+    Ok(rc_conn)
+  })
+}
 
 #[derive(Debug)]
 pub struct PresetDB {
-  conn: Connection,
   ncam: u8
 }
 
@@ -18,48 +52,28 @@ pub struct Preset {
 }
 */
 
-fn conn_preset_db() -> Result<Connection, UVIError> {
-  let mut path = dirs::config_dir().ok_or(UVIError::BadDirs)?;
-  path.push("webcam-visca-ip");
-  fs::create_dir_all(path.to_str().ok_or(UVIError::BadDirs)?)?;
-  path.push("presets.db");
-  let conn = Connection::open(path.to_str().ok_or(UVIError::BadDirs)?)?;
-  Ok(conn)
+pub async fn connect_preset_db(ncam: u8) -> Result<PresetDB, UVIError> {
+  prepare_conn()?;
+  Ok(PresetDB {ncam})
 }
 
-
-pub async fn prepare_preset_db() -> Result<(), UVIError> {
-  let conn = conn_preset_db()?;
-  conn.execute(
-    r#"
-    CREATE TABLE IF NOT EXISTS Presets (
-      ncam INT, 
-      preset INT, 
-      pan INT, tilt INT, zoom INT,
-      focusauto BOOL, focus INT,
-      whitebalauto BOOL, temperature INT,
-      PRIMARY KEY (ncam, preset)
-    );"#,
-    (),
-  )?;
+pub async fn  prepare_preset_db() -> Result<(), UVIError> {
+  prepare_conn()?;
   Ok(())
 }
 
-pub fn connect_preset_db(ncam: u8) -> Result<PresetDB, UVIError> {
-  let conn = conn_preset_db()?;
-  Ok(PresetDB {conn,ncam})
-}
-
 impl PresetDB {
-  pub fn clear(&self, npreset: u8) -> Result<(), UVIError> {
-    self.conn.execute(
+  pub async fn clear(&self, npreset: u8) -> Result<(), UVIError> {
+    let dbconn = prepare_conn()?;
+    dbconn.execute(
       "DELETE FROM Presets WHERE ncam=?1 AND preset=?2;",
       (&(self.ncam as i64), &(npreset as i64)),
     )?;
     Ok(())
   }
-  pub fn record(&self, npreset: u8, p: auto_uvc::Preset) -> Result<(), UVIError> {
-    self.conn.execute(
+  pub async fn record(&self, npreset: u8, p: auto_uvc::Preset) -> Result<(), UVIError> {
+    let dbconn = prepare_conn()?;
+    dbconn.execute(
       "INSERT OR REPLACE INTO Presets (ncam,preset,
         pan, tilt, zoom,
         focusauto, focus, whitebalauto, temperature) 
@@ -69,8 +83,9 @@ impl PresetDB {
     )?;
     Ok(())
   }
-  pub fn recover(&self, npreset: u8) -> Result<Option<auto_uvc::Preset>, UVIError> {
-    match self.conn.query_row(
+  pub async fn recover(&self, npreset: u8) -> Result<Option<auto_uvc::Preset>, UVIError> {
+    let dbconn = prepare_conn()?;
+    match dbconn.query_row(
       "SELECT pan, tilt, zoom,
       focusauto, focus, whitebalauto, temperature 
       FROM Presets WHERE ncam=?1 and preset=?2;",
@@ -93,4 +108,3 @@ impl PresetDB {
     }
   }
 }
-
