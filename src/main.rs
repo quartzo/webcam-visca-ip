@@ -253,13 +253,13 @@ async fn continuous_activation_all_cams(send_main_event: mpsc::Sender<protos::Ma
 }
 
 async fn start_camera_activation(send_main_event: mpsc::Sender<protos::MainEvent>) {
-    presetdb::prepare_preset_db().await.expect("problem on db file?");
     task::spawn(async move {
         continuous_activation_all_cams(send_main_event).await
     });
 }
 
 pub fn main() -> iced::Result {
+    presetdb::prepare_preset_db().expect("problem on db file?");
     WebCamViscaIPApp::run(Settings {
         window: window::Settings {
             size: (600,300),

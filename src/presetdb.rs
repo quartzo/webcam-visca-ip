@@ -52,18 +52,18 @@ pub struct Preset {
 }
 */
 
-pub async fn connect_preset_db(ncam: u8) -> Result<PresetDB, UVIError> {
-  prepare_conn()?;
-  Ok(PresetDB {ncam})
-}
-
-pub async fn  prepare_preset_db() -> Result<(), UVIError> {
+pub fn prepare_preset_db() -> Result<(), UVIError> {
   prepare_conn()?;
   Ok(())
 }
 
+pub fn connect_preset_db(ncam: u8) -> Result<PresetDB, UVIError> {
+  prepare_conn()?;
+  Ok(PresetDB {ncam})
+}
+
 impl PresetDB {
-  pub async fn clear(&self, npreset: u8) -> Result<(), UVIError> {
+  pub fn clear(&self, npreset: u8) -> Result<(), UVIError> {
     let dbconn = prepare_conn()?;
     dbconn.execute(
       "DELETE FROM Presets WHERE ncam=?1 AND preset=?2;",
@@ -71,7 +71,7 @@ impl PresetDB {
     )?;
     Ok(())
   }
-  pub async fn record(&self, npreset: u8, p: auto_uvc::Preset) -> Result<(), UVIError> {
+  pub fn record(&self, npreset: u8, p: auto_uvc::Preset) -> Result<(), UVIError> {
     let dbconn = prepare_conn()?;
     dbconn.execute(
       "INSERT OR REPLACE INTO Presets (ncam,preset,
@@ -83,7 +83,7 @@ impl PresetDB {
     )?;
     Ok(())
   }
-  pub async fn recover(&self, npreset: u8) -> Result<Option<auto_uvc::Preset>, UVIError> {
+  pub fn recover(&self, npreset: u8) -> Result<Option<auto_uvc::Preset>, UVIError> {
     let dbconn = prepare_conn()?;
     match dbconn.query_row(
       "SELECT pan, tilt, zoom,
