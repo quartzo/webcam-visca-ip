@@ -3,7 +3,7 @@ use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use tokio::task;
 use tokio::select;
 use tokio::sync::{mpsc, oneshot, broadcast};
-use crate::uvierror::UVIError;
+use crate::uvierror::{UVIResult, UVIError};
 use crate::protos;
 
 /* references:
@@ -58,7 +58,7 @@ struct ViscaIpCon {
 }
 
 impl ViscaIpCon {
-    async fn send_to_cam(&self, cmd: protos::CamCmd) -> Result<(), UVIError> {
+    async fn send_to_cam(&self, cmd: protos::CamCmd) -> UVIResult<()> {
         self.cam_chan.send(cmd).map_err(|_x| UVIError::AsyncChannelClosed)
     }
     async fn send_datagram(&mut self, dg: &[u8]) {
@@ -67,7 +67,7 @@ impl ViscaIpCon {
         buf.push(0xff);
         self.stream.write_all(&buf).await.unwrap();
     }
-    async fn process(&mut self) -> Result<(), UVIError> {
+    async fn process(&mut self) -> UVIResult<()> {
         self.main_chan.send(protos::MainEvent::NewViscaConnection(self.ncam, 
             self.stream.peer_addr()?)).await.map_err(|_x| UVIError::AsyncChannelClosed)?;
         let mut buf = Vec::new();
@@ -103,7 +103,7 @@ impl ViscaIpCon {
         Ok(())
     }
 
-    async fn data_received(&mut self, dg: &[u8]) -> Result<(), UVIError> {
+    async fn data_received(&mut self, dg: &[u8]) -> UVIResult<()> {
         if dg.len() < 2 { return Ok(()); } // Ignore messages that are too short
         if dg[0] != 0x81 { return Ok(()); } // Ignore messages not addressed properly
         if dg[1] == 0x01 { // Command
@@ -271,7 +271,7 @@ impl ViscaIpCon {
 }
 
 pub async fn activate_visca_port(port: u32, ncam: u8, main_chan: mpsc::Sender<protos::MainEvent>, 
-        cam_chan: mpsc::UnboundedSender<protos::CamCmd>, ncamdead: mpsc::Sender<u8>) -> Result<(), UVIError> {
+        cam_chan: mpsc::UnboundedSender<protos::CamCmd>, ncamdead: mpsc::Sender<u8>) -> UVIResult<()> {
     let listener = TcpListener::bind(format!("127.0.0.1:{}",port)).await?;
     //println!("Listening on {}", listener.local_addr()?);
     task::spawn(async move {

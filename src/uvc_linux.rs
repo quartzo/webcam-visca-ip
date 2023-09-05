@@ -1,4 +1,4 @@
-use crate::uvierror::UVIError;
+use crate::uvierror::{UVIResult, UVIError};
 use std::collections::HashMap;
 use crate::uvc::{Description, CamControl, ControlType, UVCCmd};
 use tokio::sync::{mpsc,oneshot};
@@ -32,7 +32,7 @@ static CTRLIDMAP: Lazy<HashMap<u32, CamControl>> = Lazy::new(|| {
     m
 });
 
-pub async fn find_camera(ncam: u8) -> Result<(CamInterno,String,String), UVIError> {
+pub async fn find_camera(ncam: u8) -> UVIResult<(CamInterno,String,String)> {
     let path = format!("/dev/video{}",ncam);
     let dev = Device::with_path(path)?;
     let caps = dev.query_caps()?;
@@ -68,10 +68,10 @@ pub async fn find_camera(ncam: u8) -> Result<(CamInterno,String,String), UVIErro
 }
 
 impl CamInterno {
-    fn get_ctrl_descr(&self, camctrl: CamControl) -> Result<&DescriptionInt, UVIError> {
+    fn get_ctrl_descr(&self, camctrl: CamControl) -> UVIResult<&DescriptionInt> {
         self.ctrls.get(&camctrl).ok_or(UVIError::CamControlNotFound)
     }
-    fn set_ctrl(&self, camctrl: CamControl, vl: i64) -> Result<(), UVIError> {
+    fn set_ctrl(&self, camctrl: CamControl, vl: i64) -> UVIResult<()> {
         let ctrl = self.get_ctrl_descr(camctrl)?;
         self.dev.set_control(control::Control {
             id: ctrl.id,
@@ -79,7 +79,7 @@ impl CamInterno {
         })?;
         Ok(())
     }
-    fn get_ctrl(&self, camctrl: CamControl) -> Result<i64, UVIError> {
+    fn get_ctrl(&self, camctrl: CamControl) -> UVIResult<i64> {
         let ctrl = self.get_ctrl_descr(camctrl)?;
         let val = self.dev.control(ctrl.id)?.value;
         match val {

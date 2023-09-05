@@ -1,4 +1,4 @@
-use crate::uvierror::UVIError;
+use crate::uvierror::{UVIResult, UVIError};
 use std::collections::HashMap;
 use std::thread;
 use crate::uvc::{Description, CamControl, ControlType, UVCCmd};
@@ -18,7 +18,7 @@ pub struct CamInterno {
     ctrls: HashMap<CamControl, DescriptionInt>
 }
 
-pub fn find_camera(ncam: u8) -> Result<(CamInterno, String, String), UVIError> {
+pub fn find_camera(ncam: u8) -> UVIResult<(CamInterno, String, String)> {
     let camera = nokhwa::Camera::new(ncam.into(), None)?;
     let info = camera.info();
     let card = info.human_name();
@@ -130,10 +130,10 @@ pub fn find_camera(ncam: u8) -> Result<(CamInterno, String, String), UVIError> {
 }
 
 impl CamInterno {
-    pub fn get_ctrl_descr(&self, camctrl: CamControl) -> Result<&DescriptionInt, UVIError> {
+    pub fn get_ctrl_descr(&self, camctrl: CamControl) -> UVIResult<&DescriptionInt> {
         self.ctrls.get(&camctrl).ok_or(UVIError::CamControlNotFound)
     }
-    pub fn set_ctrl(&mut self, camctrl: CamControl, mut vl: i64) -> Result<(), UVIError> {
+    pub fn set_ctrl(&mut self, camctrl: CamControl, mut vl: i64) -> UVIResult<()> {
         let ctrldescr = self.get_ctrl_descr(camctrl)?;
         let mut ctrl = self.dev.camera_control(ctrldescr.kcontrol)?;
         match ctrldescr.descr.typ {
@@ -148,7 +148,7 @@ impl CamInterno {
         self.dev.set_camera_control(ctrl)?;
         Ok(())
     } 
-    pub fn get_ctrl(&self, camctrl: CamControl) -> Result<i64, UVIError> {
+    pub fn get_ctrl(&self, camctrl: CamControl) -> UVIResult<i64> {
         let ctrldescr = self.get_ctrl_descr(camctrl)?;
         let res = self.dev.camera_control(ctrldescr.kcontrol)?;
         match ctrldescr.descr.typ {

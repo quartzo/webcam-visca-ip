@@ -1,5 +1,5 @@
 use std::fmt;
-use crate::uvierror::UVIError;
+use crate::uvierror::{UVIResult, UVIError};
 
 #[cfg(all(not(feature="uvcmock"), target_os = "linux"))]
 use crate::uvc_linux as uvci;
@@ -52,9 +52,9 @@ use tokio::sync::{mpsc,oneshot};
 
 #[derive(Debug)]
 pub enum UVCCmd {
-    GetCtrlDescr(CamControl, oneshot::Sender<Result<Description, UVIError>>),
-    SetCtrl(CamControl, i64, oneshot::Sender<Result<(), UVIError>>),
-    GetCtrl(CamControl, oneshot::Sender<Result<i64, UVIError>>),
+    GetCtrlDescr(CamControl, oneshot::Sender<UVIResult<Description>>),
+    SetCtrl(CamControl, i64, oneshot::Sender<UVIResult<()>>),
+    GetCtrl(CamControl, oneshot::Sender<UVIResult<i64>>),
 }
 
 #[derive(Debug)]
@@ -72,27 +72,27 @@ impl fmt::Display for Camera {
 }
 
 impl Camera {
-    async fn send(&self, cmd: UVCCmd) -> Result<(), UVIError> {
+    async fn send(&self, cmd: UVCCmd) -> UVIResult<()> {
         self.channel.send(cmd).await.map_err(|_x| UVIError::AsyncChannelClosed)
     }
-    pub async fn get_ctrl_descr(&self, camctrl: CamControl) -> Result<Description, UVIError> {
+    pub async fn get_ctrl_descr(&self, camctrl: CamControl) -> UVIResult<Description> {
         let (s, r) = oneshot::channel();
         self.send(UVCCmd::GetCtrlDescr(camctrl, s)).await?;
         r.await.map_err(|_x| UVIError::AsyncChannelNoSender)?
     }
-    pub async fn set_ctrl(&self, camctrl: CamControl, vl: i64) -> Result<(), UVIError> {
+    pub async fn set_ctrl(&self, camctrl: CamControl, vl: i64) -> UVIResult<()> {
         let (s, r) = oneshot::channel();
         self.send(UVCCmd::SetCtrl(camctrl, vl, s)).await?;
         r.await.map_err(|_x| UVIError::AsyncChannelNoSender)?
     } 
-    pub async fn get_ctrl(&self, camctrl: CamControl) -> Result<i64, UVIError> {
+    pub async fn get_ctrl(&self, camctrl: CamControl) -> UVIResult<i64> {
         let (s, r) = oneshot::channel();
         self.send(UVCCmd::GetCtrl(camctrl, s)).await?;
         r.await.map_err(|_x| UVIError::AsyncChannelNoSender)?
     }
 }
 
-pub async fn find_camera(ncam: u8) -> Result<Camera, UVIError> {
+pub async fn find_camera(ncam: u8) -> UVIResult<Camera> {
     let (send_find, recv_find) = oneshot::channel();
     let (send_cmd, recv_cmd) = mpsc::channel(100);
     uvci::run_handler(ncam, send_find, recv_cmd);

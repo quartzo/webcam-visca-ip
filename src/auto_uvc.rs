@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 use crate::uvc;
 use crate::protos;
 use crate::presetdb;
-use crate::uvierror::UVIError;
+use crate::uvierror::{UVIResult, UVIError};
 use tokio::time;
 use std::time::Duration;
 
@@ -17,7 +17,7 @@ struct CamCtrl {
 }
 
 impl CamCtrl {
-  async fn init(cam: &uvc::Camera, camctrl: uvc::CamControl) -> Result<CamCtrl, UVIError> {
+  async fn init(cam: &uvc::Camera, camctrl: uvc::CamControl) -> UVIResult<CamCtrl> {
     let ctrl = cam.get_ctrl_descr(camctrl).await?;
     let value = cam.get_ctrl(camctrl).await?;
     Ok(CamCtrl {
@@ -49,7 +49,7 @@ struct PanTilt {
 }
 
 impl PanTilt {
-  async fn init(cam: &uvc::Camera) -> Result<PanTilt, UVIError> {
+  async fn init(cam: &uvc::Camera) -> UVIResult<PanTilt> {
     Ok(PanTilt {
       pan: CamCtrl::init(&cam, uvc::CamControl::PanAbsolute).await?,
       tilt: CamCtrl::init(&cam, uvc::CamControl::TiltAbsolute).await?,
@@ -57,7 +57,7 @@ impl PanTilt {
       tiltspeed: 0,    
     })
   }
-  async fn absolute_move(&mut self, cam: &uvc::Camera, pan:i64, tilt:i64) -> Result<(), UVIError> {
+  async fn absolute_move(&mut self, cam: &uvc::Camera, pan:i64, tilt:i64) -> UVIResult<()> {
     self.panspeed = 0;
     self.tiltspeed = 0;
     self.pan.set(pan);
@@ -66,7 +66,7 @@ impl PanTilt {
     cam.set_ctrl(uvc::CamControl::TiltAbsolute, self.tilt.value).await?;
     Ok(())
   }
-  async fn relative_move(&mut self, cam: &uvc::Camera, pan_move:i64, tilt_move:i64) -> Result<(), UVIError> {
+  async fn relative_move(&mut self, cam: &uvc::Camera, pan_move:i64, tilt_move:i64) -> UVIResult<()> {
     self.pan.set(self.pan.value + pan_move);
     if self.pan.value >= self.pan.maximum || self.pan.value <= self.pan.minimum {
       self.panspeed = 0;
@@ -79,7 +79,7 @@ impl PanTilt {
     cam.set_ctrl(uvc::CamControl::TiltAbsolute, self.tilt.value).await?;
     Ok(())
   }
-  async fn periodic_move(&mut self, cam: &uvc::Camera) -> Result<(), UVIError> {
+  async fn periodic_move(&mut self, cam: &uvc::Camera) -> UVIResult<()> {
     // seconds(degree/3600) per second -> /20 for each 50ms
     let mut pan_move = self.panspeed/20; let mut tilt_move = self.tiltspeed/20;
     if pan_move != 0 || tilt_move != 0 {
@@ -106,19 +106,19 @@ struct Zoom {
 }
 
 impl Zoom {
-  async fn init(cam: &uvc::Camera) -> Result<Zoom, UVIError> {
+  async fn init(cam: &uvc::Camera) -> UVIResult<Zoom> {
     Ok(Zoom {
       zoom: CamCtrl::init(&cam, uvc::CamControl::ZoomAbsolute).await?,
       zoomspeed: 0,
     })
   }
-  async fn absolute(&mut self, cam: &uvc::Camera, zoom:i64) -> Result<(), UVIError> {
+  async fn absolute(&mut self, cam: &uvc::Camera, zoom:i64) -> UVIResult<()> {
     self.zoomspeed = 0;
     self.zoom.set(zoom);
     cam.set_ctrl(uvc::CamControl::ZoomAbsolute, self.zoom.value).await?;
     Ok(())
   }
-  async fn periodic_move(&mut self, cam: &uvc::Camera) -> Result<(), UVIError> {
+  async fn periodic_move(&mut self, cam: &uvc::Camera) -> UVIResult<()> {
     if self.zoomspeed != 0 {
       let zoom_absolute = cam.get_ctrl(uvc::CamControl::ZoomAbsolute).await?;
       let zoomdelta = (zoom_absolute-self.zoom.value).abs();
@@ -142,14 +142,14 @@ struct Focus {
 }
 
 impl Focus {
-  async fn init(cam: &uvc::Camera) -> Result<Focus, UVIError> {
+  async fn init(cam: &uvc::Camera) -> UVIResult<Focus> {
     Ok(Focus {
       auto: CamCtrl::init(&cam, uvc::CamControl::FocusAuto).await?,
       focus: CamCtrl::init(&cam, uvc::CamControl::FocusAbsolute).await?,
       focusspeed: 0
     })
   }
-  async fn absolute(&mut self, cam: &uvc::Camera, auto: bool, focus:i64) -> Result<(), UVIError> {
+  async fn absolute(&mut self, cam: &uvc::Camera, auto: bool, focus:i64) -> UVIResult<()> {
     self.focusspeed = 0;
     self.auto.set(if auto {1} else {0});
     self.focus.set(focus);
@@ -159,7 +159,7 @@ impl Focus {
     }
     Ok(())
   }
-  async fn periodic_move(&mut self, cam: &uvc::Camera) -> Result<(), UVIError> {
+  async fn periodic_move(&mut self, cam: &uvc::Camera) -> UVIResult<()> {
     if self.focusspeed != 0 {
       let focus_absolute = cam.get_ctrl(uvc::CamControl::FocusAbsolute).await?;
       let focusdelta = (focus_absolute-self.focus.value).abs();
@@ -182,13 +182,13 @@ struct WhiteBal {
 }
 
 impl WhiteBal {
-  async fn init(cam: &uvc::Camera) -> Result<WhiteBal, UVIError> {
+  async fn init(cam: &uvc::Camera) -> UVIResult<WhiteBal> {
     Ok(WhiteBal {
       auto: CamCtrl::init(&cam, uvc::CamControl::WhiteBalanceTemperatureAuto).await?,
       temp: CamCtrl::init(&cam, uvc::CamControl::WhiteBalanceTemperature).await?
     })
   }
-  async fn absolute(&mut self, cam: &uvc::Camera, auto: bool, temp:i64) -> Result<(), UVIError> {
+  async fn absolute(&mut self, cam: &uvc::Camera, auto: bool, temp:i64) -> UVIResult<()> {
     self.auto.set(if auto {1} else {0});
     self.temp.set(temp);
     cam.set_ctrl(uvc::CamControl::WhiteBalanceTemperatureAuto, self.auto.value).await?;
@@ -224,7 +224,7 @@ pub struct Preset {
 }
 
 impl AutoCamera {
-  pub async fn find_camera(ndev: u8) -> Result<(mpsc::UnboundedSender<protos::CamCmd>,String), UVIError> {
+  pub async fn find_camera(ndev: u8) -> UVIResult<(mpsc::UnboundedSender<protos::CamCmd>,String)> {
     let cam = uvc::find_camera(ndev).await?;
     let pantilt = PanTilt::init(&cam).await?;
     let zoom = Zoom::init(&cam).await?;
@@ -267,7 +267,7 @@ impl AutoCamera {
       }
     }
   }
-  async fn run_ev(&mut self, ev: protos::CamCmd) -> Result<bool,UVIError> {
+  async fn run_ev(&mut self, ev: protos::CamCmd) -> UVIResult<bool> {
     match ev {
       protos::CamCmd::SetPresetNcam(ncam) => {
         self.presetdb_ncam = Some(ncam);

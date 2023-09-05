@@ -1,6 +1,6 @@
-use rusqlite::{Connection, Result};
+use rusqlite::Connection;
 use crate::auto_uvc;
-use crate::uvierror::UVIError;
+use crate::uvierror::{UVIResult, UVIError};
 use std::fs;
 use dirs;
 use std::sync::OnceLock;
@@ -22,15 +22,15 @@ pub struct PresetDBActor {
 enum PresetDBActorMessage {
   Clear{
     ncam: u8, npreset: u8,
-    respond_to: oneshot::Sender<Result<(), UVIError>>,
+    respond_to: oneshot::Sender<UVIResult<()>>,
   },
   Record{
     ncam: u8, npreset: u8, preset: auto_uvc::Preset,
-    respond_to: oneshot::Sender<Result<(), UVIError>>,
+    respond_to: oneshot::Sender<UVIResult<()>>,
   },
   Recover{
     ncam: u8, npreset: u8,
-    respond_to: oneshot::Sender<Result<Option<auto_uvc::Preset>, UVIError>>,
+    respond_to: oneshot::Sender<UVIResult<Option<auto_uvc::Preset>>>,
   },
 }
 
@@ -89,7 +89,7 @@ impl PresetDBActor {
       }
     });
   }
-  fn new() -> Result<mpsc::Sender<PresetDBActorMessage>, UVIError> {
+  fn new() -> UVIResult<mpsc::Sender<PresetDBActorMessage>> {
     let mut path = dirs::config_dir().ok_or(UVIError::BadDirs)?;
     path.push("webcam-visca-ip");
     fs::create_dir_all(path.to_str().ok_or(UVIError::BadDirs)?)?;
@@ -117,7 +117,7 @@ impl PresetDBActor {
 
 static PRESET_CHAN: OnceLock<mpsc::Sender<PresetDBActorMessage>> = OnceLock::new();
 
-pub fn prepare_preset_db() -> Result<(), UVIError> {
+pub fn prepare_preset_db() -> UVIResult<()> {
   if let Some(_) = PRESET_CHAN.get() {
     return Ok(());
   }
@@ -126,7 +126,7 @@ pub fn prepare_preset_db() -> Result<(), UVIError> {
   Ok(())
 }
 
-pub async fn clear(ncam: u8, npreset: u8) -> Result<(), UVIError> {
+pub async fn clear(ncam: u8, npreset: u8) -> UVIResult<()> {
   let preset_send_cmd = PRESET_CHAN.get().ok_or(UVIError::AsyncChannelNoSender)?;
   let (send, recv) = oneshot::channel();
   let msg = PresetDBActorMessage::Clear {
@@ -137,7 +137,7 @@ pub async fn clear(ncam: u8, npreset: u8) -> Result<(), UVIError> {
   Ok(recv.await.expect("Actor task has been killed")?)
 }
 
-pub async fn record(ncam: u8, npreset: u8, p: auto_uvc::Preset) -> Result<(), UVIError> {
+pub async fn record(ncam: u8, npreset: u8, p: auto_uvc::Preset) -> UVIResult<()> {
   let preset_send_cmd = PRESET_CHAN.get().ok_or(UVIError::AsyncChannelNoSender)?;
   let (send, recv) = oneshot::channel();
   let msg = PresetDBActorMessage::Record {
@@ -148,7 +148,7 @@ pub async fn record(ncam: u8, npreset: u8, p: auto_uvc::Preset) -> Result<(), UV
   Ok(recv.await.expect("Actor task has been killed")?)
 }
 
-pub async fn recover(ncam: u8, npreset: u8) -> Result<Option<auto_uvc::Preset>, UVIError> {
+pub async fn recover(ncam: u8, npreset: u8) -> UVIResult<Option<auto_uvc::Preset>> {
   let preset_send_cmd = PRESET_CHAN.get().ok_or(UVIError::AsyncChannelNoSender)?;
   let (send, recv) = oneshot::channel();
   let msg = PresetDBActorMessage::Recover {

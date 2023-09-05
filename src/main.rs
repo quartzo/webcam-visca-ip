@@ -9,7 +9,7 @@ mod viscaip;
 mod uvc;
 mod auto_uvc;
 mod uvierror;
-use crate::uvierror::UVIError;
+use crate::uvierror::{UVIResult, UVIError};
 use std::io::ErrorKind;
 #[cfg(all(not(feature="uvcmock"), target_os = "linux"))]
 mod uvc_linux;
@@ -191,7 +191,7 @@ impl ActiveCams {
 }
 
 async fn try_to_activate_all_cams(ncams: &mut ActiveCams, send_main_event: &mpsc::Sender<protos::MainEvent>,
-        send_ncamdead: &mpsc::Sender<u8>) -> Result<(),UVIError> {
+        send_ncamdead: &mpsc::Sender<u8>) -> UVIResult<()> {
     'nextcamdev: for ncamdev in 0..8 {
         if ncams.cam_dev_already_active(ncamdev) { continue 'nextcamdev; }
         let (cam_chan, bus) = match auto_uvc::AutoCamera::find_camera(ncamdev).await {

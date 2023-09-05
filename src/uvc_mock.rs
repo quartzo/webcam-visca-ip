@@ -1,4 +1,4 @@
-use crate::uvierror::UVIError;
+use crate::uvierror::{UVIResult, UVIError};
 use std::collections::HashMap;
 use tokio::sync::{mpsc,oneshot};
 use tokio::task;
@@ -11,7 +11,7 @@ pub struct CamInterno {
     changed: bool
 }
 
-pub fn mock_find_camera(ncam: u8) -> Result<(CamInterno, String, String), UVIError> {
+pub fn mock_find_camera(ncam: u8) -> UVIResult<(CamInterno, String, String)> {
     if ncam > 2 {
         return Err(UVIError::CameraNotFound)
     }
@@ -76,10 +76,10 @@ pub fn mock_find_camera(ncam: u8) -> Result<(CamInterno, String, String), UVIErr
 }
 
 impl CamInterno {
-    pub fn get_ctrl_descr(&self, camctrl: CamControl) -> Result<&Description, UVIError> {
+    pub fn get_ctrl_descr(&self, camctrl: CamControl) -> UVIResult<&Description> {
         self.ctrls.get(&camctrl).ok_or(UVIError::CamControlNotFound)
     }
-    pub fn set_ctrl(&mut self, camctrl: CamControl, vl: i64) -> Result<(), UVIError> {
+    pub fn set_ctrl(&mut self, camctrl: CamControl, vl: i64) -> UVIResult<()> {
         let ctrldescr = self.get_ctrl_descr(camctrl)?;
         match ctrldescr.typ {
             ControlType::Integer => {
@@ -93,7 +93,7 @@ impl CamInterno {
         }
         Ok(())
     } 
-    pub fn get_ctrl(&self, camctrl: CamControl) -> Result<i64, UVIError> {
+    pub fn get_ctrl(&self, camctrl: CamControl) -> UVIResult<i64> {
         let ctrldescr = self.get_ctrl_descr(camctrl)?;
         let vl = *self.memory.get(&camctrl).unwrap_or(&0) as i64;
         match ctrldescr.typ {
