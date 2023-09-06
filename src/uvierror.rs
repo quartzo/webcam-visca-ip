@@ -1,5 +1,6 @@
 use std::io;
 use rusqlite;
+use std::net::AddrParseError;
 #[cfg(target_os = "windows")]
 use nokhwa;
 use thiserror::Error;
@@ -23,6 +24,10 @@ pub enum UVIError {
   RusqliteError(#[from] rusqlite::Error),
   #[error("std::io error")]
   IoError(#[from] io::Error),
+  #[error("AddrParse error")]
+  AddrParseError(#[from] AddrParseError),
+  #[error("serde_json error")]
+  SerdeJsonError(#[from] serde_json::Error),
   #[cfg(target_os = "windows")]
   #[error("Nokhwa error")]
   NokhwaError(#[from] nokhwa::NokhwaError),

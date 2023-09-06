@@ -4,8 +4,8 @@ use tokio::task;
 use tokio::select;
 use tokio::sync::{mpsc, oneshot, broadcast};
 use crate::uvierror::{UVIResult, UVIError};
-use crate::MainEvent;
 use crate::auto_uvc::CamCmd;
+use crate::cams;
 
 /* references:
 - https://www.epiphan.com/userguides/LUMiO12x/Content/UserGuides/PTZ/3-operation/VISCAcommands.htm
@@ -53,8 +53,8 @@ fn list_to_hex(l: &[u8]) -> String {
 struct ViscaIpCon {
     ncam: u8,
     stream: TcpStream,
-    main_chan: mpsc::Sender<MainEvent>,
     cam_chan: mpsc::UnboundedSender<CamCmd>,
+    cams_chan: mpsc::Sender<cams::CamsMsgs>,
     recvkill: broadcast::Receiver<()>
 }
 
@@ -69,7 +69,7 @@ impl ViscaIpCon {
         self.stream.write_all(&buf).await.unwrap();
     }
     async fn process(&mut self) -> UVIResult<()> {
-        self.main_chan.send(MainEvent::NewViscaConnection(self.ncam, 
+        self.cams_chan.send(cams::CamsMsgs::NewViscaConnection(self.ncam, 
             self.stream.peer_addr()?)).await.map_err(|_x| UVIError::AsyncChannelClosed)?;
         let mut buf = Vec::new();
         let mut buf2 = vec![0u8;256];
@@ -99,7 +99,7 @@ impl ViscaIpCon {
                 }
             }
         }
-        self.main_chan.send(MainEvent::LostViscaConnection(self.ncam, 
+        self.cams_chan.send(cams::CamsMsgs::LostViscaConnection(self.ncam, 
             self.stream.peer_addr()?)).await.map_err(|_x| UVIError::AsyncChannelClosed)?;
         Ok(())
     }
@@ -265,8 +265,8 @@ impl ViscaIpCon {
     }
 }
 
-pub async fn activate_visca_port(port: u32, ncam: u8, main_chan: mpsc::Sender<MainEvent>, 
-        cam_chan: mpsc::UnboundedSender<CamCmd>, ncamdead: mpsc::Sender<u8>) -> UVIResult<()> {
+pub async fn activate_visca_port(port: u32, ncam: u8, 
+        cam_chan: mpsc::UnboundedSender<CamCmd>, cams_chan: mpsc::Sender<cams::CamsMsgs>) -> UVIResult<()> {
     let listener = TcpListener::bind(format!("127.0.0.1:{}",port)).await?;
     //println!("Listening on {}", listener.local_addr()?);
     task::spawn(async move {
@@ -281,8 +281,8 @@ pub async fn activate_visca_port(port: u32, ncam: u8, main_chan: mpsc::Sender<Ma
                     let mut v = ViscaIpCon {
                         ncam: ncam,
                         stream: socket,
-                        main_chan: main_chan.clone(),
                         cam_chan: cam_chan.clone(),
+                        cams_chan: cams_chan.clone(),
                         recvkill: sendkill.subscribe()
                     };
                     let sendkill = sendkill.clone();
@@ -298,8 +298,7 @@ pub async fn activate_visca_port(port: u32, ncam: u8, main_chan: mpsc::Sender<Ma
                 }
             }
         }
-        ncamdead.send(ncam).await.ok();
+        cams_chan.send(cams::CamsMsgs::NCamDead(ncam)).await.ok();
     });
     Ok(())
 }
-
