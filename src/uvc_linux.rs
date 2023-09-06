@@ -33,8 +33,7 @@ static CTRLIDMAP: Lazy<HashMap<u32, CamControl>> = Lazy::new(|| {
 });
 
 pub async fn find_camera(ncam: u8) -> UVIResult<(CamInterno,String,String)> {
-    let path = format!("/dev/video{}",ncam);
-    let dev = Device::with_path(path)?;
+    let dev = Device::new(ncam.into())?;
     let caps = dev.query_caps()?;
     if !caps.capabilities.contains(capability::Flags::VIDEO_CAPTURE) {
         return Err(UVIError::CameraNotFound);

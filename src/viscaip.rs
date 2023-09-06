@@ -4,7 +4,8 @@ use tokio::task;
 use tokio::select;
 use tokio::sync::{mpsc, oneshot, broadcast};
 use crate::uvierror::{UVIResult, UVIError};
-use crate::protos;
+use crate::MainEvent;
+use crate::auto_uvc::CamCmd;
 
 /* references:
 - https://www.epiphan.com/userguides/LUMiO12x/Content/UserGuides/PTZ/3-operation/VISCAcommands.htm
@@ -52,13 +53,13 @@ fn list_to_hex(l: &[u8]) -> String {
 struct ViscaIpCon {
     ncam: u8,
     stream: TcpStream,
-    main_chan: mpsc::Sender<protos::MainEvent>,
-    cam_chan: mpsc::UnboundedSender<protos::CamCmd>,
+    main_chan: mpsc::Sender<MainEvent>,
+    cam_chan: mpsc::UnboundedSender<CamCmd>,
     recvkill: broadcast::Receiver<()>
 }
 
 impl ViscaIpCon {
-    async fn send_to_cam(&self, cmd: protos::CamCmd) -> UVIResult<()> {
+    async fn send_to_cam(&self, cmd: CamCmd) -> UVIResult<()> {
         self.cam_chan.send(cmd).map_err(|_x| UVIError::AsyncChannelClosed)
     }
     async fn send_datagram(&mut self, dg: &[u8]) {
@@ -68,7 +69,7 @@ impl ViscaIpCon {
         self.stream.write_all(&buf).await.unwrap();
     }
     async fn process(&mut self) -> UVIResult<()> {
-        self.main_chan.send(protos::MainEvent::NewViscaConnection(self.ncam, 
+        self.main_chan.send(MainEvent::NewViscaConnection(self.ncam, 
             self.stream.peer_addr()?)).await.map_err(|_x| UVIError::AsyncChannelClosed)?;
         let mut buf = Vec::new();
         let mut buf2 = vec![0u8;256];
@@ -98,7 +99,7 @@ impl ViscaIpCon {
                 }
             }
         }
-        self.main_chan.send(protos::MainEvent::LostViscaConnection(self.ncam, 
+        self.main_chan.send(MainEvent::LostViscaConnection(self.ncam, 
             self.stream.peer_addr()?)).await.map_err(|_x| UVIError::AsyncChannelClosed)?;
         Ok(())
     }
@@ -109,16 +110,16 @@ impl ViscaIpCon {
         if dg[1] == 0x01 { // Command
             if dg[2] == 0x04 && dg[3] == 0x3f { // Cam Memory
                 if dg[4] == 0x00 { // print('reset preset %d' % dg[5])
-                    self.send_to_cam(protos::CamCmd::ResetPreset(dg[5])).await?;
+                    self.send_to_cam(CamCmd::ResetPreset(dg[5])).await?;
                 } else if dg[4] == 0x01 { // print('save preset %d' % dg[5])
-                    self.send_to_cam(protos::CamCmd::RecordPreset(dg[5])).await?;
+                    self.send_to_cam(CamCmd::RecordPreset(dg[5])).await?;
                 } else if dg[4] == 0x02 { // print('recall preset %d' % dg[5])
-                    self.send_to_cam(protos::CamCmd::RecoverPreset(dg[5])).await?;
+                    self.send_to_cam(CamCmd::RecoverPreset(dg[5])).await?;
                 }
             } else if dg[2] == 0x00 && dg[3] == 0x01 { // IF_Clear
                 // println!("Clearing command buffer");
             } else if dg[2] == 0x06 && dg[3] == 0x04 { // Home
-                self.send_to_cam(protos::CamCmd::Home()).await?;
+                self.send_to_cam(CamCmd::Home()).await?;
             } else if dg[2] == 0x06 && dg[3] == 0x01 { // move cam pan/tilt
                 // seconds(degree/3600) per second
                 let mut panspeed = ((dg[4] as i64) % (0x18+1)) * 3600; // 0x18 -> ~ 5sec for 180 degrees
@@ -127,38 +128,32 @@ impl ViscaIpCon {
                 let tiltspeed = ((dg[5] as i64) % (0x14+1)) * 3600; // 0x14 -> ~2sec for 45 degrees
                 let panmove:i64 = panspeed * (if dg[6] == 1 {-1} else if dg[6] == 2 {1} else {0});
                 let tiltmove:i64 = tiltspeed * (if dg[7] == 1 {1} else if dg[7] == 2 {-1} else {0});
-                self.send_to_cam(protos::CamCmd::MoveContinuous(protos::PanTilt{
-                    pan: panmove, tilt: tiltmove
-                })).await?;
+                self.send_to_cam(CamCmd::MoveContinuous(panmove, tiltmove)).await?;
             } else if dg[2] == 0x06 && dg[3] == 0x03 { // move pan/tilt relative
                 let panmove = nibbles_to_sec_angle(&dg[6..10]);
                 let tiltmove = nibbles_to_sec_angle(&dg[10..14]);
-                self.send_to_cam(protos::CamCmd::MoveRelative(protos::PanTilt{
-                    pan: panmove, tilt: tiltmove
-                })).await?;
+                self.send_to_cam(CamCmd::MoveRelative(panmove, tiltmove)).await?;
             } else if dg[2] == 0x06 && dg[3] == 0x02 { // move pan/tilt absolute
                 let panpos = nibbles_to_sec_angle(&dg[6..10]);
                 let tiltpos = nibbles_to_sec_angle(&dg[10..14]);
-                self.send_to_cam(protos::CamCmd::MoveAbsolute(protos::PanTilt{
-                    pan: panpos, tilt: tiltpos
-                })).await?;
+                self.send_to_cam(CamCmd::MoveAbsolute(panpos, tiltpos)).await?;
             } else if dg[2] == 0x04 && dg[3] == 0x07 { // move cam zoom
                 let mut zoom:f64 = 0.0;
                 if dg[4] == 2 { zoom = 1.0; }
                 else if dg[4] == 3 { zoom = -1.0; }
                 else if dg[4] & 0xF0 == 0x20 { zoom = ((1+(dg[4] & 0x7)) as f64)/8.0; }
                 else if dg[4] & 0xF0 == 0x30 { zoom = -((1+(dg[4] & 0x7)) as f64)/8.0; }
-                self.send_to_cam(protos::CamCmd::ZoomContinuous(zoom)).await?;
+                self.send_to_cam(CamCmd::ZoomContinuous(zoom)).await?;
             } else if dg[2] == 0x04 && dg[3] == 0x47 { // move cam zoom direct
                 let zoom:f64 = (nibbles_to_int(&dg[4..8]) as f64)/(0x4000 as f64);
-                self.send_to_cam(protos::CamCmd::ZoomDirect(zoom)).await?;
+                self.send_to_cam(CamCmd::ZoomDirect(zoom)).await?;
             } else if dg[2] == 0x04 && dg[3] == 0x38 { // focus mode
                 if dg[4] == 2 {
-                    self.send_to_cam(protos::CamCmd::AutoFocus(true)).await?;
+                    self.send_to_cam(CamCmd::AutoFocus(true)).await?;
                 } else if dg[4] == 3 {
-                    self.send_to_cam(protos::CamCmd::AutoFocus(false)).await?;
+                    self.send_to_cam(CamCmd::AutoFocus(false)).await?;
                 } else if dg[4] == 0x10 {
-                    self.send_to_cam(protos::CamCmd::AutoFocusToggle()).await?;
+                    self.send_to_cam(CamCmd::AutoFocusToggle()).await?;
                 }
             } else if dg[2] == 0x04 && dg[3] == 0x08 { // move cam focus
                 let mut focus:f64 = 0.0;
@@ -166,23 +161,23 @@ impl ViscaIpCon {
                 else if dg[4] == 3 { focus = -1.0; }
                 else if dg[4] & 0xF0 == 0x20 { focus = ((1+(dg[4] & 0x7)) as f64)/8.0; }
                 else if dg[4] & 0xF0 == 0x30 { focus = -((1+(dg[4] & 0x7)) as f64)/8.0; }
-                self.send_to_cam(protos::CamCmd::FocusContinuous(focus)).await?;
+                self.send_to_cam(CamCmd::FocusContinuous(focus)).await?;
             } else if dg[2] == 0x04 && dg[3] == 0x48 { // move cam focus direct
                 // pppp: F000 (Near) - 0000 (Far) -> 1.0 (Near) - 0.0 (Far)
                 let focus:f64 = (nibbles_to_int(&dg[4..8]) as f64)/(0xF000 as f64);
-                self.send_to_cam(protos::CamCmd::FocusDirect(focus)).await?;
+                self.send_to_cam(CamCmd::FocusDirect(focus)).await?;
             } else if dg[2] == 0x04 && dg[3] == 0x18 { // one push focus
                 if dg[4] == 1 {
-                    self.send_to_cam(protos::CamCmd::FocusOnePushTrigger()).await?;
+                    self.send_to_cam(CamCmd::FocusOnePushTrigger()).await?;
                 } else if dg[4] == 2 {
-                    self.send_to_cam(protos::CamCmd::FocusDirect(0.0)).await?; // FAR (infinite)
+                    self.send_to_cam(CamCmd::FocusDirect(0.0)).await?; // FAR (infinite)
                 }
             } else if dg[2] == 0x04 && dg[3] == 0x10 { // one push wb
                 if dg[4] == 0x05 {
-                    self.send_to_cam(protos::CamCmd::WhiteBalanceTrigger()).await?;
+                    self.send_to_cam(CamCmd::WhiteBalanceTrigger()).await?;
                 }
             } else if dg[2] == 0x04 && dg[3] == 0x35 { // set white balance
-                self.send_to_cam(protos::CamCmd::WhiteBalanceMode(dg[4])).await?;
+                self.send_to_cam(CamCmd::WhiteBalanceMode(dg[4])).await?;
             } else {
                 println!("command unknown: {}", list_to_hex(&dg));
             }
@@ -195,22 +190,22 @@ impl ViscaIpCon {
                 self.send_datagram(&[0x50u8, 0x09,0x99, 0x00,0x01, 0x00,0x01, 0x02]).await;
             } else if dg[2] == 0x06 && dg[3] == 0x12 { // Pan-tiltPosInq
                 let (s, r) = oneshot::channel();
-                self.send_to_cam(protos::CamCmd::QueryPanTilt(s)).await?;
+                self.send_to_cam(CamCmd::QueryPanTilt(s)).await?;
                 let pantilt = r.await.map_err(|_x| UVIError::AsyncChannelNoSender)?;
                 let mut v = vec![0x50u8];
-                v.extend(&sec_angle_to_nibbles(pantilt.pan,5));
-                v.extend(&sec_angle_to_nibbles(pantilt.tilt,4));
+                v.extend(&sec_angle_to_nibbles(pantilt.0,5));
+                v.extend(&sec_angle_to_nibbles(pantilt.1,4));
                 self.send_datagram(&v).await;
             } else if dg[2] == 0x04 && dg[3] == 0x38 { // CAM_FocusModeInq
                 let (s, r) = oneshot::channel();
-                self.send_to_cam(protos::CamCmd::QueryFocusMode(s)).await?;
+                self.send_to_cam(CamCmd::QueryFocusMode(s)).await?;
                 let mode = r.await.map_err(|_x| UVIError::AsyncChannelNoSender)?;
                 let mut v = vec![0x50u8];
                 v.extend([if mode {2u8} else {3u8}]);
                 self.send_datagram(&v).await;
             } else if dg[2] == 0x04 && dg[3] == 0x35 { // CAM_WhiteBalInq
                 let (s, r) = oneshot::channel();
-                self.send_to_cam(protos::CamCmd::QueryWhiteBalanceMode(s)).await?;
+                self.send_to_cam(CamCmd::QueryWhiteBalanceMode(s)).await?;
                 let mode = r.await.map_err(|_x| UVIError::AsyncChannelNoSender)?;
                 let mut v = vec![0x50u8];
                 v.extend([mode]);
@@ -223,7 +218,7 @@ impl ViscaIpCon {
                     //vvvv: Focus Position
                     //w.bit0: Focus Mode 1: Auto 0: Manual
                     let (s, r) = oneshot::channel();
-                    self.send_to_cam(protos::CamCmd::QueryFocusMode(s)).await?;
+                    self.send_to_cam(CamCmd::QueryFocusMode(s)).await?;
                     let mode = r.await.map_err(|_x| UVIError::AsyncChannelNoSender)?;
                     let mut v = vec![0x50u8];
                     for _ in 0..11 { v.extend([0u8]); }
@@ -270,8 +265,8 @@ impl ViscaIpCon {
     }
 }
 
-pub async fn activate_visca_port(port: u32, ncam: u8, main_chan: mpsc::Sender<protos::MainEvent>, 
-        cam_chan: mpsc::UnboundedSender<protos::CamCmd>, ncamdead: mpsc::Sender<u8>) -> UVIResult<()> {
+pub async fn activate_visca_port(port: u32, ncam: u8, main_chan: mpsc::Sender<MainEvent>, 
+        cam_chan: mpsc::UnboundedSender<CamCmd>, ncamdead: mpsc::Sender<u8>) -> UVIResult<()> {
     let listener = TcpListener::bind(format!("127.0.0.1:{}",port)).await?;
     //println!("Listening on {}", listener.local_addr()?);
     task::spawn(async move {

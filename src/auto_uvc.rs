@@ -2,11 +2,38 @@ use std::fmt;
 use tokio::task;
 use tokio::sync::mpsc;
 use crate::uvc;
-use crate::protos;
 use crate::presetdb;
 use crate::uvierror::{UVIResult, UVIError};
 use tokio::time;
 use std::time::Duration;
+use std::sync::Arc;
+
+use tokio::sync::oneshot;
+
+#[derive(Debug)]
+pub enum CamCmd {
+  SetPresetNcam(u8),
+  ResetPreset(u8),
+  RecordPreset(u8),
+  RecoverPreset(u8),
+  Home(),
+  MoveContinuous(i64,i64), // pan,tilt: seconds (angle/3600) pan:-170to170 degrees tilt:-30to30 degrees
+  MoveRelative(i64,i64), // pan,tilt: seconds (angle/3600) pan:-170to170 degrees tilt:-30to30 degrees
+  MoveAbsolute(i64,i64), // pan,tilt: seconds (angle/3600) pan:-170to170 degrees tilt:-30to30 degrees
+  ZoomContinuous(f64), // -1 to 1
+  ZoomDirect(f64), // 0 to 1.0
+  AutoFocus(bool),
+  AutoFocusToggle(),
+  FocusContinuous(f64), // -1 to 1
+  FocusDirect(f64), // 1.0 (Near) - 0.0 (Far)
+  FocusOnePushTrigger(),
+  WhiteBalanceTrigger(),
+  WhiteBalanceMode(u8),
+  QueryPanTilt(oneshot::Sender<(i64,i64)>), // pan,tilt: seconds (angle/3600) pan:-170to170 degrees tilt:-30to30 degrees
+  QueryFocusMode(oneshot::Sender<bool>),
+  QueryWhiteBalanceMode(oneshot::Sender<u8>),
+  //Close()
+}
 
 #[derive(Default,Debug)]
 struct CamCtrl {
@@ -201,7 +228,7 @@ impl WhiteBal {
 
 #[derive(Debug)]
 pub struct AutoCamera {
-  cam: uvc::Camera,
+  cam: Arc<uvc::Camera>,
   presetdb_ncam: Option<u8>,
   pantilt: PanTilt,
   zoom: Zoom,
@@ -224,14 +251,12 @@ pub struct Preset {
 }
 
 impl AutoCamera {
-  pub async fn find_camera(ndev: u8) -> UVIResult<(mpsc::UnboundedSender<protos::CamCmd>,String)> {
-    let cam = uvc::find_camera(ndev).await?;
+  pub async fn activate_camera_ctrls(cam: Arc<uvc::Camera>) -> UVIResult<mpsc::UnboundedSender<CamCmd>> {
     let pantilt = PanTilt::init(&cam).await?;
     let zoom = Zoom::init(&cam).await?;
     let focus = Focus::init(&cam).await?;
     let whitebal = WhiteBal::init(&cam).await?;
     let (cam_chan, recv_cam_chan) = mpsc::unbounded_channel();
-    let bus = cam.bus.to_string();
     let acam = AutoCamera {
       cam: cam,
       presetdb_ncam: None,
@@ -241,9 +266,9 @@ impl AutoCamera {
       whitebal: whitebal,
     };
     task::spawn(acam.run(recv_cam_chan));
-    Ok((cam_chan,bus))
+    Ok(cam_chan)
   }
-  async fn run(mut self, mut recv_cam_chan: mpsc::UnboundedReceiver<protos::CamCmd>) {
+  async fn run(mut self, mut recv_cam_chan: mpsc::UnboundedReceiver<CamCmd>) {
     let mut tmr50ms = time::interval(Duration::from_millis(50));
     loop {
       tokio::select! {
@@ -267,16 +292,16 @@ impl AutoCamera {
       }
     }
   }
-  async fn run_ev(&mut self, ev: protos::CamCmd) -> UVIResult<bool> {
+  async fn run_ev(&mut self, ev: CamCmd) -> UVIResult<bool> {
     match ev {
-      protos::CamCmd::SetPresetNcam(ncam) => {
+      CamCmd::SetPresetNcam(ncam) => {
         self.presetdb_ncam = Some(ncam);
       },
-      protos::CamCmd::ResetPreset(npreset) => {
+      CamCmd::ResetPreset(npreset) => {
         let ncam = self.presetdb_ncam.ok_or(UVIError::CameraNotFound)?;
         presetdb::clear(ncam, npreset).await?;
       },
-      protos::CamCmd::RecordPreset(npreset) => {
+      CamCmd::RecordPreset(npreset) => {
         let preset = Preset {
           pan: self.pantilt.pan.value,
           tilt: self.pantilt.tilt.value,
@@ -289,7 +314,7 @@ impl AutoCamera {
         let ncam = self.presetdb_ncam.ok_or(UVIError::CameraNotFound)?;
         presetdb::record(ncam, npreset, preset).await?;
       },
-      protos::CamCmd::RecoverPreset(npreset) => {
+      CamCmd::RecoverPreset(npreset) => {
         let ncam = self.presetdb_ncam.ok_or(UVIError::CameraNotFound)?;
         let opreset = presetdb::recover(ncam, npreset).await?;
         match opreset {
@@ -302,56 +327,56 @@ impl AutoCamera {
           _ => ()
         }
       },
-      protos::CamCmd::Home() => {
+      CamCmd::Home() => {
         self.pantilt.absolute_move(&self.cam, 0, 0).await?;
         self.zoom.absolute(&self.cam, self.zoom.zoom.minimum).await?;
         self.focus.absolute(&self.cam, true, self.focus.focus.value).await?;
       },
-      protos::CamCmd::MoveContinuous(pantilt) => {
-        self.pantilt.panspeed = pantilt.pan; self.pantilt.tiltspeed = pantilt.tilt;
+      CamCmd::MoveContinuous(pan, tilt) => {
+        self.pantilt.panspeed = pan; self.pantilt.tiltspeed = tilt;
         self.pantilt.periodic_move(&self.cam).await?;
       },
-      protos::CamCmd::MoveRelative(pantilt) => {
-        self.pantilt.relative_move(&self.cam, pantilt.pan, pantilt.tilt).await?;
+      CamCmd::MoveRelative(pan, tilt) => {
+        self.pantilt.relative_move(&self.cam, pan, tilt).await?;
       },
-      protos::CamCmd::MoveAbsolute(pantilt) => {
-        self.pantilt.absolute_move(&self.cam, pantilt.pan, pantilt.tilt).await?;
+      CamCmd::MoveAbsolute(pan, tilt) => {
+        self.pantilt.absolute_move(&self.cam, pan, tilt).await?;
       },
 
 
-      protos::CamCmd::ZoomContinuous(zoom_f64) => { // -1 to 1
+      CamCmd::ZoomContinuous(zoom_f64) => { // -1 to 1
         self.zoom.zoomspeed = (((self.zoom.zoom.maximum-self.zoom.zoom.minimum) as f64)*
           zoom_f64/20.0) as i64; // ops per 50ms
         self.zoom.periodic_move(&self.cam).await?;
       },
-      protos::CamCmd::ZoomDirect(zoom_f64) => { // 0 to 1.0
+      CamCmd::ZoomDirect(zoom_f64) => { // 0 to 1.0
         self.zoom.absolute(&self.cam, self.zoom.zoom.minimum+
           (((self.zoom.zoom.maximum-self.zoom.zoom.minimum) as f64)*zoom_f64) as i64).await?;
       },
-      protos::CamCmd::AutoFocus(active) => {
+      CamCmd::AutoFocus(active) => {
         self.focus.absolute(&self.cam, active, self.focus.focus.value).await?;
       },
-      protos::CamCmd::AutoFocusToggle() => {
+      CamCmd::AutoFocusToggle() => {
         let active = if self.focus.auto.value == 0 {true} else {false};
         self.focus.absolute(&self.cam, active, self.focus.focus.value).await?;
       },
-      protos::CamCmd::FocusContinuous(focus_f64) => { // -1 to 1
+      CamCmd::FocusContinuous(focus_f64) => { // -1 to 1
         self.focus.absolute(&self.cam, false, self.focus.focus.value).await?;
         self.focus.focusspeed = (((self.focus.focus.maximum-self.focus.focus.minimum) as f64)*
           focus_f64/20.0) as i64; // ops per 50ms
         self.focus.periodic_move(&self.cam).await?;
       },
-      protos::CamCmd::FocusDirect(focus_f64) => { // 1.0 (Near) - 0.0 (Far)
+      CamCmd::FocusDirect(focus_f64) => { // 1.0 (Near) - 0.0 (Far)
         self.focus.absolute(&self.cam, true, self.focus.focus.minimum+
           (((self.focus.focus.maximum-self.focus.focus.minimum) as f64)*focus_f64) as i64).await?;
       },
-      protos::CamCmd::FocusOnePushTrigger() => {
+      CamCmd::FocusOnePushTrigger() => {
         // couldn't make it work
       },
-      protos::CamCmd::WhiteBalanceTrigger() => {
+      CamCmd::WhiteBalanceTrigger() => {
         // couldn't make it work
       },
-      protos::CamCmd::WhiteBalanceMode(wb) => {
+      CamCmd::WhiteBalanceMode(wb) => {
         if wb == 0 {       // 0-Auto
           self.whitebal.absolute(&self.cam, true, 6500).await?;
         } else if wb == 1 {       // 1-Indoor
@@ -364,18 +389,15 @@ impl AutoCamera {
         // 5-Manual  
       },
 
-      protos::CamCmd::QueryPanTilt(s) => {
-        s.send(protos::PanTilt {
-          pan: self.pantilt.pan.value,
-          tilt: self.pantilt.tilt.value,
-        }).map_err(|_x| UVIError::AsyncChannelClosed)?;
+      CamCmd::QueryPanTilt(s) => {
+        s.send((self.pantilt.pan.value, self.pantilt.tilt.value)).map_err(|_x| UVIError::AsyncChannelClosed)?;
       },
-      protos::CamCmd::QueryFocusMode(s) => {
+      CamCmd::QueryFocusMode(s) => {
         s.send(
           if self.focus.auto.value>0 {true} else {false}
         ).map_err(|_x| UVIError::AsyncChannelClosed)?;
       },
-      protos::CamCmd::QueryWhiteBalanceMode(s) => {
+      CamCmd::QueryWhiteBalanceMode(s) => {
         s.send(
           if self.whitebal.auto.value > 0 { 0 }
           else if self.whitebal.temp.value < 4000 { 1 }
@@ -390,4 +412,3 @@ impl AutoCamera {
     Ok(true)
   }
 }
-
