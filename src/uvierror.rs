@@ -5,6 +5,7 @@ use std::net::AddrParseError;
 use nokhwa;
 use thiserror::Error;
 use tokio::sync::mpsc::error::SendError;
+use std::str;
 
 #[derive(Error, Debug)]
 pub enum UVIError {
@@ -31,6 +32,8 @@ pub enum UVIError {
   SerdeJsonError(#[from] serde_json::Error),
   #[error("MPSC Send Error")]
   MPSCSendError,
+  #[error("Utf8 Error")]
+  StrUtf8Error(#[from] str::Utf8Error),
   #[cfg(target_os = "windows")]
   #[error("Nokhwa error")]
   NokhwaError(#[from] nokhwa::NokhwaError),

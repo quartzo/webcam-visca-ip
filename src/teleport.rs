@@ -13,6 +13,19 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::cams::CamsMsgs;
 use tokio::time::{Duration, sleep, Instant, sleep_until};
 
+use v4l::buffer::Type;
+use v4l::io::traits::CaptureStream;
+use v4l::prelude::*;
+use v4l::video::Capture;
+use v4l::framesize;
+
+/*
+static BOOT_TIME: Lazy<Instant> = Lazy::new(|| Instant::now());
+fn os_gettime_ns() -> u64 {
+    Instant::now().duration_since(*BOOT_TIME).as_nanos().try_into().unwrap()
+}
+*/
+
 static HOSTNAME: Lazy<String> = Lazy::new(|| 
     hostname::get().expect("No Hostname?").into_string().expect("Bad string from Hostame")
 );
@@ -111,9 +124,82 @@ impl TeleportCam {
         self.capture_chan.send(ncli).await?;
         Ok(())
     }
+    async fn activate_camera(self: &Arc<TeleportCam>) -> UVIResult<()> {
+        // Allocate 4 buffers by default
+        let buffer_count = 4;
+    
+        let fourcc_mjpg = v4l::FourCC::new(b"MJPG");
+        let dev = Device::new(self.ncam.into())?;
+        let mut framesizes = dev.enum_framesizes(fourcc_mjpg)?;
+        let mut width = 1; let mut height = 1;
+        while let Some(fs2) = framesizes.pop() {
+            match fs2.size {
+                framesize::FrameSizeEnum::Discrete(s) => {
+                    if s.width*s.height > width*height {
+                        width = s.width; height = s.height;
+                    }        
+                },
+                _ => {}
+            }
+        }
+        println!("{:?}", framesizes);
+        let mut format = dev.format()?;
+        format.fourcc = fourcc_mjpg;
+        format.width = width; format.height = height;
+        format = dev.set_format(&format)?;
+        let params = dev.params()?;
+        println!("Active format:\n{}", format);
+        println!("Active parameters:\n{}", params);
+    
+        // Setup a buffer stream and grab a frame, then print its data
+        let mut stream = MmapStream::with_buffers(&dev, Type::VideoCapture, buffer_count)?;
+    
+        // warmup
+        stream.next()?;
+    
+        loop {
+            let (buf, meta) = stream.next()?;
+        
+            println!("Buffer");
+            println!("  sequence  : {}", meta.sequence);
+            println!("  timestamp : {}", meta.timestamp);
+            println!("  flags     : {}", meta.flags);
+            println!("  length    : {}", buf.len());
+
+            let timestamp: u64 = (meta.timestamp.sec as u64)*1000000000+(meta.timestamp.usec as u64)*1000;
+            let size: i32 = buf.len() as i32;
+            let mut r:Vec<u8> = Vec::new();
+       
+            // header
+            r.extend_from_slice(b"JPEG");
+            r.extend_from_slice(&timestamp.to_le_bytes());
+            r.extend_from_slice(&size.to_le_bytes());
+            // ImageHeader
+            let color_matrix:f32 = 0.0;
+            for _i in 0..16 {
+                r.extend_from_slice(&color_matrix.to_le_bytes());
+            }
+            let color_range_min:f32 = 0.0;
+            for _i in 0..3 {
+                r.extend_from_slice(&color_range_min.to_le_bytes());
+            }
+            let color_range_max:f32 = 0.0;
+            for _i in 0..3 {
+                r.extend_from_slice(&color_range_max.to_le_bytes());
+            }
+            // data
+            r.extend_from_slice(buf);
+        
+            self.send(r.into()).await?;
+        }
+        Ok(())
+    }
+
     fn start_capturing(self: &Arc<TeleportCam>, mut capture_chan: mpsc::Receiver<usize>) {
         let teleportcam = self.clone();
         tokio::spawn(async move {
+            teleportcam.activate_camera().await.unwrap();
+        
             'thread: loop {
                 let until = Instant::now() + Duration::from_millis(200);
                 loop {

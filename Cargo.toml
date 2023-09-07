@@ -20,6 +20,8 @@ thiserror = "1.0.48"
 serde = { version = "1.0.188", features = ["derive"] }
 serde_json = "1.0.105"
 hostname = "0.3.1"
+turbojpeg = { version = "0.5.4", features = ["image"] }
+image = "0.24.7"
 
 [target.'cfg(unix)'.dependencies]
 v4l = "0.14.0"
