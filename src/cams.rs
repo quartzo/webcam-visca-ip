@@ -17,7 +17,8 @@ use crate::MainEvent;
 pub enum CamsMsgs {
   NewViscaConnection(u8, net::SocketAddr),
   LostViscaConnection(u8, net::SocketAddr),
-  NCamDead(u8)
+  NCamDead(u8),
+  TeleportNumConnections(u8, usize),
 }
 
 struct CamData {
@@ -25,6 +26,7 @@ struct CamData {
     viscaport: Option<u32>,
     bus: String,
     ncnx: i64,
+    cnxs_teleport: usize,
     _teleport_chan: mpsc::Sender<()>,
 }
 
@@ -61,6 +63,11 @@ impl AllCams {
                                 //println!("Disconnect from: {} ncam: {}", addr, ncam);
                                 self.update_screen().await;
                             },
+                            CamsMsgs::TeleportNumConnections(ncam, tot) => {
+                                let camdata = &mut self.ncams.get_mut(&ncam).expect("ncam not active");
+                                camdata.cnxs_teleport = tot;
+                                self.update_screen().await;
+                            }
                         }
                     }
                 }
@@ -99,7 +106,8 @@ impl AllCams {
                                 viscaport: Some(port),
                                 bus: cam.bus.clone(),
                                 ncnx: 0,
-                                _teleport_chan: teleport::announce_teleport(ncamdev).await?
+                                cnxs_teleport: 0,
+                                _teleport_chan: teleport::announce_teleport(ncamdev, self.send_cams_msgs.clone()).await?
                             });
                             self.update_screen().await;
                         },
@@ -114,7 +122,8 @@ impl AllCams {
                         viscaport: None,
                         bus: cam.bus.clone(),
                         ncnx: 0,
-                        _teleport_chan: teleport::announce_teleport(ncamdev).await?
+                        cnxs_teleport: 0,
+                        _teleport_chan: teleport::announce_teleport(ncamdev, self.send_cams_msgs.clone()).await?
                     });
                     self.update_screen().await;
                 }
@@ -126,8 +135,8 @@ impl AllCams {
         let mut col: Vec<String> = Vec::new();
         for (_ncam, cam) in self.ncams.iter() {
             let txt = match cam.viscaport {
-                Some(port) => format!("#{} / VISCA port {} / Bus {}: TCP Conections {}", cam.ncam, port, cam.bus, cam.ncnx),
-                None => format!("#{} / Regular WebCam / Bus {}", cam.ncam, cam.bus)
+                Some(port) => format!("#{} / VISCA port {} / Bus {}: NVisca {} / NTeleport {}", cam.ncam, port, cam.bus, cam.ncnx, cam.cnxs_teleport),
+                None => format!("#{} / Regular WebCam / Bus {} / NTeleport {}", cam.ncam, cam.bus, cam.cnxs_teleport)
             };
             col.push(txt);
         }
