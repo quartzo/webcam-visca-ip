@@ -30,6 +30,7 @@ struct AnnouncePayload<'a> {
 }
 
 struct TeleportCamClient {
+    socketc_addr: SocketAddr,
     sender: mpsc::Sender<Arc<Vec<u8>>>,
 }
 struct TeleportCam {
@@ -46,12 +47,12 @@ impl TeleportCam {
         teleportcam.start_capturing(capture_chan_receiver);
         teleportcam
     }
-    async fn sender_add(self: &Arc<TeleportCam>, mut socketc: TcpStream, _socketc_addr: SocketAddr) -> UVIResult<()> {
+    async fn sender_add(self: &Arc<TeleportCam>, mut socketc: TcpStream, socketc_addr: SocketAddr) -> UVIResult<()> {
         let (sender, mut receiver) = mpsc::channel(800);
         let teleportcamclient = Arc::new(TeleportCamClient{
-            sender
+            socketc_addr: socketc_addr.clone(), sender
         });
-        self.bufs.lock().await.push(teleportcamclient.clone());
+        self.bufs.lock().await.push(teleportcamclient);
         self.update_num_clients().await?;
         let teleportcam = self.clone();
 
@@ -82,7 +83,7 @@ impl TeleportCam {
                     },
                 }
             }
-            teleportcam.remove_client(teleportcamclient).await.unwrap();
+            teleportcam.remove_client(socketc_addr).await.unwrap();
         });
         Ok(())
     }
@@ -91,13 +92,13 @@ impl TeleportCam {
         let bufs = self.bufs.lock().await.clone();
         for teleportcamclient in bufs {
             if teleportcamclient.sender.send(msg.clone()).await.is_err() {
-                self.remove_client(teleportcamclient).await?;
+                self.remove_client(teleportcamclient.socketc_addr).await?;
             }
         }
         Ok(())
     }
-    async fn remove_client(self: &Arc<TeleportCam>, teleportcamclient: Arc<TeleportCamClient>) -> UVIResult<()> {
-        self.bufs.lock().await.retain(|x| !Arc::ptr_eq(x,&teleportcamclient));
+    async fn remove_client(self: &Arc<TeleportCam>, socketc_addr: SocketAddr) -> UVIResult<()> {
+        self.bufs.lock().await.retain(|x| x.socketc_addr != socketc_addr);
         self.update_num_clients().await?;
         Ok(())
     }
