@@ -4,6 +4,7 @@ use std::net::AddrParseError;
 #[cfg(target_os = "windows")]
 use nokhwa;
 use thiserror::Error;
+use tokio::sync::mpsc::error::SendError;
 
 #[derive(Error, Debug)]
 pub enum UVIError {
@@ -28,9 +29,19 @@ pub enum UVIError {
   AddrParseError(#[from] AddrParseError),
   #[error("serde_json error")]
   SerdeJsonError(#[from] serde_json::Error),
+  #[error("MPSC Send Error")]
+  MPSCSendError,
   #[cfg(target_os = "windows")]
   #[error("Nokhwa error")]
   NokhwaError(#[from] nokhwa::NokhwaError),
+}
+
+impl<T> From<SendError<T>> for UVIError {
+  fn from(_err: SendError<T>) -> Self {
+      // Get details from the error you want,
+      // or even implement for both T variants.
+      Self::MPSCSendError
+  }
 }
 
 pub type UVIResult<T> = std::result::Result<T, UVIError>;

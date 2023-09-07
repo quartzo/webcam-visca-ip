@@ -3,7 +3,6 @@ use std::str::FromStr;
 use tokio::net::{TcpListener, TcpStream};
 use once_cell::sync::Lazy;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, sleep};
 use crate::uvierror::UVIResult;
 use serde::Serialize;
 use serde_json;
@@ -12,6 +11,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::cams::CamsMsgs;
+use tokio::time::{Duration, sleep, Instant, sleep_until};
 
 static HOSTNAME: Lazy<String> = Lazy::new(|| 
     hostname::get().expect("No Hostname?").into_string().expect("Bad string from Hostame")
@@ -35,19 +35,24 @@ struct TeleportCamClient {
 struct TeleportCam {
     ncam: u8,
     bufs: Mutex<Vec<Arc<TeleportCamClient>>>,
+    capture_chan: mpsc::Sender<usize>,
     cams_send: mpsc::Sender<CamsMsgs>,
 }
 impl TeleportCam {
     fn new(ncam: u8, cams_send: mpsc::Sender<CamsMsgs>) -> Arc<TeleportCam> {
-        Arc::new(TeleportCam{ncam, bufs: Mutex::new(Vec::new()), cams_send})
+        let (capture_chan_sender, capture_chan_receiver) = mpsc::channel(100);
+        let teleportcam = Arc::new(TeleportCam{ncam, bufs: Mutex::new(Vec::new()), 
+            capture_chan: capture_chan_sender, cams_send});
+        teleportcam.start_capturing(capture_chan_receiver);
+        teleportcam
     }
-    async fn sender_add(self: &Arc<TeleportCam>, mut socketc: TcpStream, _socketc_addr: SocketAddr) {
+    async fn sender_add(self: &Arc<TeleportCam>, mut socketc: TcpStream, _socketc_addr: SocketAddr) -> UVIResult<()> {
         let (sender, mut receiver) = mpsc::channel(800);
         let teleportcamclient = Arc::new(TeleportCamClient{
             sender
         });
         self.bufs.lock().await.push(teleportcamclient.clone());
-        self.cams_send.send(CamsMsgs::TeleportNumConnections(self.ncam, self.bufs.lock().await.len())).await.unwrap();
+        self.update_num_clients().await?;
         let teleportcam = self.clone();
 
         tokio::spawn(async move {
@@ -77,24 +82,57 @@ impl TeleportCam {
                     },
                 }
             }
-            teleportcam.remove_client(teleportcamclient).await;
+            teleportcam.remove_client(teleportcamclient).await.unwrap();
         });
+        Ok(())
     }
-    async fn send(self: &Arc<TeleportCam>, msg: Vec<u8>) {
+    async fn send(self: &Arc<TeleportCam>, msg: Vec<u8>) -> UVIResult<()> {
         let msg = Arc::new(msg);
         let bufs = self.bufs.lock().await.clone();
         for teleportcamclient in bufs {
             if teleportcamclient.sender.send(msg.clone()).await.is_err() {
-                self.remove_client(teleportcamclient).await;
+                self.remove_client(teleportcamclient).await?;
             }
         }
+        Ok(())
     }
-    async fn remove_client(self: &Arc<TeleportCam>, teleportcamclient: Arc<TeleportCamClient>) {
+    async fn remove_client(self: &Arc<TeleportCam>, teleportcamclient: Arc<TeleportCamClient>) -> UVIResult<()> {
         self.bufs.lock().await.retain(|x| !Arc::ptr_eq(x,&teleportcamclient));
-        self.cams_send.send(CamsMsgs::TeleportNumConnections(self.ncam, self.bufs.lock().await.len())).await.unwrap();
+        self.update_num_clients().await?;
+        Ok(())
     }
     async fn destroy(self: &Arc<TeleportCam>) {
         self.bufs.lock().await.clear(); // sender out of scope, close channel
+    }
+    async fn update_num_clients(self: &Arc<TeleportCam>) -> UVIResult<()> {
+        let ncli = self.bufs.lock().await.len();
+        self.cams_send.send(CamsMsgs::TeleportNumConnections(self.ncam, ncli)).await?;
+        self.capture_chan.send(ncli).await?;
+        Ok(())
+    }
+    fn start_capturing(self: &Arc<TeleportCam>, mut capture_chan: mpsc::Receiver<usize>) {
+        let teleportcam = self.clone();
+        tokio::spawn(async move {
+            'thread: loop {
+                let until = Instant::now() + Duration::from_millis(200);
+                loop {
+                    tokio::select! {
+                        _ = sleep_until(until) => {
+                            break;
+                        },
+                        msg = capture_chan.recv() => {
+                            match msg {
+                                None => break 'thread,
+                                Some(_nclient) => {
+
+                                }
+                            }
+                        }
+                    }
+                }
+                teleportcam.send("aaaa".into()).await.unwrap();
+            }
+        });
     }
 }
 
@@ -108,7 +146,7 @@ pub async fn announce_teleport(ncam: u8, cams_sendmsg: mpsc::Sender<CamsMsgs>) -
         &Ipv4Addr::from_str(ANNOUCE_ACCEPTORS_HOST).expect("Bad multicast addr?"),
         &Ipv4Addr::UNSPECIFIED)?;
     let pl = AnnouncePayload{
-        Name:&HOSTNAME, Port: listen_port as i32,
+        Name:&format!("{} #{}", &*HOSTNAME, ncam), Port: listen_port as i32,
         AudioAndVideo: false, Version:&"0.0.0"
     };
     let message = serde_json::to_vec(&pl)?;
@@ -130,7 +168,7 @@ pub async fn announce_teleport(ncam: u8, cams_sendmsg: mpsc::Sender<CamsMsgs>) -
                 },
                 acc = listener.accept() => {
                     let (socketc, socketc_addr) = acc.expect("Bad accept?");
-                    teleportcam.sender_add(socketc, socketc_addr).await;
+                    teleportcam.sender_add(socketc, socketc_addr).await.unwrap();
                 }
             }
         }
