@@ -22,6 +22,12 @@ pub enum UVIError {
   AsyncChannelClosed,
   #[error("Receiving from a closed channel")]
   AsyncChannelNoSender,
+
+  #[error("Bad Jpeg Format")]
+  BadJpegError,
+  #[error("String Utf8 Error")]
+  StringUf8Error(#[from] std::string::FromUtf8Error),
+
   #[error("rusqlite error")]
   RusqliteError(#[from] rusqlite::Error),
   #[error("std::io error")]
