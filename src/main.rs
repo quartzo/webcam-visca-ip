@@ -13,6 +13,7 @@ mod uvc_win;
 mod uvc_mock;
 mod cams;
 mod teleport;
+mod jpeg_fix;
 
 use iced::{
     window, executor, Alignment, Element, Application, Command, Settings, Length, Subscription, Theme

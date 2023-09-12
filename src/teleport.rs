@@ -3,7 +3,7 @@ use std::str::FromStr;
 use tokio::net::{TcpListener, TcpStream};
 use once_cell::sync::Lazy;
 use tokio::sync::mpsc;
-use crate::uvierror::{UVIError, UVIResult};
+use crate::uvierror::{UVIResult};
 use serde::Serialize;
 use serde_json;
 use hostname;
@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::cams::CamsMsgs;
 use tokio::time::{Duration, sleep, Instant, sleep_until};
+use crate::jpeg_fix;
 
 use v4l::buffer::Type;
 use v4l::io::traits::CaptureStream;
@@ -26,68 +27,12 @@ fn os_gettime_ns() -> u64 {
 }
 */
 
-use std::fs::File;
-use std::io::prelude::*;
-
-#[derive(Debug)]
-struct JpegSize {
-    size: usize, typ: String,
-    width: u32, height: u32
-}
-
-fn get_jpeg_size(data: &[u8]) -> UVIResult<JpegSize> {
-    let datalen = data.len();
-    if datalen < 32 {
-        return Err(UVIError::BadJpegError);
-    }
-    //Check for valid JPEG image
-    if data[0..4] != [0xFF, 0xD8, 0xFF, 0xE0] {
-        return Err(UVIError::BadJpegError);
-    }
-    // Check for valid JPEG header (null terminated JFIF)
-    let typ = &data[6..11];
-    if typ != [b'J', b'F', b'I', b'F', 0] && typ != [b'A', b'V', b'I', b'1', 0] {
-        return Err(UVIError::BadJpegError);
-    }
-    let mut jpegsize = JpegSize{
-        size:0,
-        typ: String::from_utf8(typ[0..4].to_vec())?,
-        width:0,height:0
-    };
-    let mut p = 11;
-    loop {
-        // search next block
-        while data[p] != 0xFF || data[p+1] == 0x00 {
-            p += 1;
-            if p+2 >= datalen {
-                return Err(UVIError::BadJpegError);
-            }
-        }
-        match data[p+1] {
-            0xC0 => {  //0xFFC0 is the "Start of frame" marker which contains the file size
-                if p+9 > datalen {
-                    return Err(UVIError::BadJpegError);
-                }
-                //The structure of the 0xFFC0 block is quite simple [0xFFC0][ushort length][uchar precision][ushort x][ushort y]
-                jpegsize.height = u16::from_be_bytes(data[p+5..p+7].try_into().unwrap()) as u32;
-                jpegsize.width = u16::from_be_bytes(data[p+7..p+9].try_into().unwrap()) as u32;
-                p += 9;
-            },
-            0xD9 => {  //0xFFD9 end of jpeg image
-                jpegsize.size = p + 2; //Skip the block marker
-                return Ok(jpegsize);
-            },
-            _ => {
-                p += 2;
-            }
-        }
-    }
-}
+//use std::fs::File;
+//use std::io::prelude::*;
 
 static HOSTNAME: Lazy<String> = Lazy::new(|| 
     hostname::get().expect("No Hostname?").into_string().expect("Bad string from Hostame")
 );
-
 
 static COLOR_RANGE_MIN: [f32; 3] = [0.,0.,0.];
 static COLOR_RANGE_MAX: [f32; 3] = [1.,1.,1.];
@@ -346,13 +291,13 @@ impl TeleportCam {
             r.extend_from_slice(&COLOR_RANGE_MIN_BYTES);
             r.extend_from_slice(&COLOR_RANGE_MAX_BYTES);
             // data
-            let sz = get_jpeg_size(buf)?;
-            //println!("sz {:?}", sz);
+            let good_jpeg = jpeg_fix::get_good_jpeg(buf)?;
+            //println!("sz {:?}", good_jpeg.len());
 
-            let mut file = File::create("/tmp/img.jpg")?;
-            file.write_all(&buf[0..sz.size])?;
+            //let mut file = File::create("/tmp/img.jpg")?;
+            //file.write_all(&good_jpeg)?;
         
-            r.extend_from_slice(&buf[0..sz.size]);
+            r.extend_from_slice(&good_jpeg);
 
             self.send(r.into()).await?;
         }
