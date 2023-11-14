@@ -23,11 +23,17 @@ hostname = "0.3.1"
 turbojpeg = { version = "0.5.4", features = ["image"] }
 image = "0.24.7"
 
+[dependencies.nokhwa]
+path = "nokhwa"
+version = "0.10.3"
+# Use the native input backends
+features = ["input-native"]
+
 [target.'cfg(unix)'.dependencies]
 v4l = "0.14.0"
 
-[target.'cfg(windows)'.dependencies.nokhwa]
-git = "https://github.com/quartzo/nokhwa.git"
-branch = "ctrls"
-#path = "../../nokhwa"
-features = ["input-msmf"]
+#[target.'cfg(windows)'.dependencies.nokhwa]
+#git = "https://github.com/quartzo/nokhwa.git"
+#branch = "ctrls"
+##path = "../../nokhwa"
+#features = ["input-msmf"]

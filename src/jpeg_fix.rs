@@ -2,6 +2,8 @@
 use std::collections::HashMap;
 use once_cell::sync::Lazy;
 use crate::uvierror::{UVIError, UVIResult};
+use std::iter;
+use std::sync::Arc;
 
 /* The default Huffman tables used by motion JPEG frames. When a motion JPEG
  * frame does not have DHT tables, we should use the huffman tables suggested by
@@ -85,171 +87,192 @@ static MJPG_AC1_HUFFVAL:[u8;162] = [
   0xF9, 0xFA
 ];
 
+const LUT_BITS: u8 = 8;
+
+// Section C.2
+fn derive_huffman_codes(bits: &[u8; 16]) -> UVIResult<(Vec<u16>, Vec<u8>)> {
+    // Figure C.1
+    let huffsize = bits.iter()
+                       .enumerate()
+                       .fold(Vec::new(), |mut acc, (i, &value)| {
+                           acc.extend(iter::repeat((i + 1) as u8).take(value as usize));
+                           acc
+                       });
+
+    // Figure C.2
+    let mut huffcode = vec![0u16; huffsize.len()];
+    let mut code_size = huffsize[0];
+    let mut code = 0u32;
+
+    for (i, &size) in huffsize.iter().enumerate() {
+        while code_size < size {
+            code <<= 1;
+            code_size += 1;
+        }
+
+        if code >= (1u32 << size) {
+            return Err(UVIError::HuffmanBadCodeLength);
+        }
+
+        huffcode[i] = code as u16;
+        code += 1;
+    }
+
+    Ok((huffcode, huffsize))
+}
+
 // A Huffman Table class
 #[derive(Debug, Clone)]
 struct HuffmanTable {
-    root: HuffmanTableTreeEl,
-    /*elements: Vec<u8>,*/
-}
-#[derive(Debug, Clone)]
-enum HuffmanTableTreeEl {
-    Element(u8),
-    List(Vec<HuffmanTableTreeEl>)
+    values: Vec<u8>,
+    delta: [i32; 16],
+    maxcode: [i32; 16],
+
+    lut: [(u8, u8); 1 << LUT_BITS],
 }
 impl HuffmanTable {
-    fn bits_from_lengths(root: &mut HuffmanTableTreeEl, element: u8, pos: u8) -> bool {
-        match root {
-            HuffmanTableTreeEl::List(rootl) => {
-                if pos == 0 {
-                    if rootl.len() < 2 {
-                        rootl.push(HuffmanTableTreeEl::Element(element));
-                        return true;
-                    }
-                    return false;
-                }
-                for i in 0..2 {
-                    if rootl.len() == i {
-                        rootl.push(HuffmanTableTreeEl::List(Vec::new()));
-                    }
-                    if HuffmanTable::bits_from_lengths(&mut rootl[i], element, pos - 1) == true {
-                        return true;
-                    }
-                }
-                return false;
-            },
-            _ => {}
-        }
-        false
-    }
-    fn get_huffman_bits(lengths: &[u8], elements: &[u8]) -> HuffmanTable {
-        let mut ht = HuffmanTable{
-            root: HuffmanTableTreeEl::List(Vec::new()),
-            /*elements: elements.to_vec()*/
-        };
-        let mut ii = 0;
-        for i in 0..lengths.len() {
-            for _j in 0..lengths[i] {
-                HuffmanTable::bits_from_lengths(&mut ht.root, elements[ii], i as u8);
-                ii += 1;
+    fn new(bits: &[u8; 16], values: &[u8]) -> UVIResult<HuffmanTable> {
+        let (huffcode, huffsize) = derive_huffman_codes(bits)?;
+
+        // Section F.2.2.3
+        // Figure F.15
+        // delta[i] is set to VALPTR(I) - MINCODE(I)
+        let mut delta = [0i32; 16];
+        let mut maxcode = [-1i32; 16];
+        let mut j = 0;
+
+        for i in 0 .. 16 {
+            if bits[i] != 0 {
+                delta[i] = j as i32 - huffcode[j] as i32;
+                j += bits[i] as usize;
+                maxcode[i] = huffcode[j - 1] as i32;
             }
         }
-        //println!("r: {:?}",ht);
-        ht
-    }
-    fn find(&self, st: &mut Stream) -> u8 {
-        let mut r = &self.root;
-        match r {
-            HuffmanTableTreeEl::List(rl) => {
-                if rl.len() == 1 {
-                    return match rl[0] {
-                        HuffmanTableTreeEl::List(_) => 0,
-                        HuffmanTableTreeEl::Element(el) => el
-                    };
-                }
-            },
-            HuffmanTableTreeEl::Element(_) => {
-                return 0;
+
+        // Build a lookup table for faster decoding.
+        let mut lut = [(0u8, 0u8); 1 << LUT_BITS];
+
+        for (i, &size) in huffsize.iter().enumerate().filter(|&(_, &size)| size <= LUT_BITS) {
+            let bits_remaining = LUT_BITS - size;
+            let start = (huffcode[i] << bits_remaining) as usize;
+
+            let val = (values[i], size);
+            for b in &mut lut[start..][..1 << bits_remaining] {
+                *b = val;
             }
         }
-        let mut bits: u8 = 0;
-        loop {
-            match r {
-                HuffmanTableTreeEl::List(rl) => {
-                    let bit = st.get_bit();
-                    bits = bits << 1 | bit;
-                    r = &rl[bit as usize];
-                },
-                HuffmanTableTreeEl::Element(el) => {
-                    //println!("find {:02x}", bits);
-                    return *el;
+
+        Ok(HuffmanTable{
+            values: values.to_vec(),
+            delta,
+            maxcode,
+            lut,
+        })
+    }
+
+    // Section F.2.2.3
+    // Figure F.16
+    pub fn decode(&self, st: &mut Stream) -> UVIResult<u8> {
+        let (value, size) = self.lut[st.peek_bits(LUT_BITS) as usize];
+
+        if size > 0 {
+            st.consume_bits(size);
+            Ok(value)
+        }
+        else {
+            let bits = st.peek_bits(16);
+
+            for i in LUT_BITS .. 16 {
+                let code = (bits >> (15 - i)) as i32;
+
+                if code <= self.maxcode[i as usize] {
+                    st.consume_bits(i + 1);
+
+                    let index = (code + self.delta[i as usize]) as usize;
+                    return Ok(self.values[index]);
                 }
             }
-        }
-    }
-    fn get_code(&self, st: &mut Stream) -> u8 {
-        loop {
-            let res = self.find(st);
-            if res == 0 {
-                return 0;
-            } /*else if res != -1 { */
-                return res;
-            /*}*/
+
+            Err(UVIError::HuffmanDecodeError)
         }
     }
 }
 
-static HUFFMAN_TABLES_BASE:Lazy<HashMap<u8,HuffmanTable>> = Lazy::new(|| {
+static HUFFMAN_TABLES_BASE:Lazy<HashMap<u8,Arc<HuffmanTable>>> = Lazy::new(|| {
     let mut tbl = HashMap::new();
-    tbl.insert(0, HuffmanTable::get_huffman_bits(&MJPG_DC0_BITS, &MJPG_DC0_HUFFVAL));
-    tbl.insert(1, HuffmanTable::get_huffman_bits(&MJPG_DC1_BITS, &MJPG_DC1_HUFFVAL));
-    tbl.insert(0x10 | 0, HuffmanTable::get_huffman_bits(&MJPG_AC0_BITS, &MJPG_AC0_HUFFVAL));
-    tbl.insert(0x10 | 1, HuffmanTable::get_huffman_bits(&MJPG_AC1_BITS, &MJPG_AC1_HUFFVAL));
+    tbl.insert(0, Arc::new(HuffmanTable::new(&MJPG_DC0_BITS, &MJPG_DC0_HUFFVAL).unwrap()));
+    tbl.insert(1, Arc::new(HuffmanTable::new(&MJPG_DC1_BITS, &MJPG_DC1_HUFFVAL).unwrap()));
+    tbl.insert(0x10 | 0, Arc::new(HuffmanTable::new(&MJPG_AC0_BITS, &MJPG_AC0_HUFFVAL).unwrap()));
+    tbl.insert(0x10 | 1, Arc::new(HuffmanTable::new(&MJPG_AC1_BITS, &MJPG_AC1_HUFFVAL).unwrap()));
     tbl
 });
 
-// A bit stream class with convenience methods
-struct Stream {
-    data: Vec<u8>,
-    pos: usize
+struct Stream<'a> {
+    data: &'a [u8],
+    pos: usize,
+    nbits_av: u8,
+    bits_av: u64
 }
-impl Stream {
+impl<'a> Stream<'a> {
     fn new(data: &[u8]) -> Stream {
         Stream{
-            data: data.to_vec(),
-            pos: 0
+            data: &data,
+            pos: 0,
+            nbits_av: 0, bits_av: 0
         }
     }
-    fn get_bit(&mut self) -> u8 {
-        let bpos = self.pos >> 3;
-        let b = if bpos < self.data.len() {
-            self.data[bpos]
-        } else {
-            0
-        };
-        let s = 7 - (self.pos & 0x7);
-        self.pos += 1;
-        let r = (b >> s) & 1;
-        return r;
-    }
-    fn get_bit_n(&mut self, l: u8) -> u32 {
-        let mut val: u32 = 0;
-        for _ in 0..l {
-            val = val<<1 | (self.get_bit() as u32);
+    fn get_extra_bits(&mut self) {
+        while self.nbits_av <= 56 {
+            let byte = if self.pos < self.data.len() {
+                self.data[self.pos]
+            } else {
+                0
+            };
+            self.pos += 1;
+            self.bits_av |= (byte as u64) << (56 - self.nbits_av);
+            self.nbits_av += 8;
         }
-        //println!("get_bit_n {:02x}", val);
-        val
+    }
+    #[inline]
+    fn peek_bits(&mut self, count: u8) -> u32 {
+        assert!(count <= 32);
+        if self.nbits_av < count {
+            self.get_extra_bits();
+        }
+        ((self.bits_av >> (64 - count)) & ((1 << count) - 1)) as u32
+    }
+    #[inline]
+    fn consume_bits(&mut self, count: u8) {
+        assert!(count <= 32);
+        if self.nbits_av < count {
+            self.get_extra_bits();
+        }
+        self.bits_av <<= count as usize;
+        self.nbits_av -= count;
     }
     fn get_extras(&self) -> i32 {
-        //println!("len {} pos {}", self.data.len(), self.pos);
-        (self.data.len() as i32)-((self.pos+7) >> 3) as i32
+        (self.data.len() as i32)+((self.nbits_av>>3) as i32)-(self.pos as i32)
     }
 }
 
-fn build_matrix(huffman_tables:&HashMap<u8,HuffmanTable>, st: &mut Stream, 
-    id_huffman_dc: u8, id_huffman_ac: u8) {
-    let mut code = huffman_tables[&(0 + id_huffman_dc)].get_code(st);
-    let mut _bits = st.get_bit_n(code);
+fn build_matrix(huffman_tables:&HashMap<u8,Arc<HuffmanTable>>, st: &mut Stream, 
+    id_huffman_dc: u8, id_huffman_ac: u8) -> UVIResult<()> {
+    let mut code = huffman_tables[&(0 + id_huffman_dc)].decode(st)?;
+    st.consume_bits(code); // consume DC
 
     let mut l = 1;
     while l < 64 {
-        code = huffman_tables[&(16 + id_huffman_ac)].get_code(st);
+        code = huffman_tables[&(0x10 + id_huffman_ac)].decode(st)?;
         if code == 0 {
             break;
         }
 
         // The first part of the AC key_len
         // is the number of leading zeros
-        if code > 15 {
-            l += code >> 4;
-            code = code & 0x0F;
-        }
-
-        _bits = st.get_bit_n(code);
-
-        if l < 64 {
-            l += 1;
-        }
+        l += code >> 4 + 1;
+        st.consume_bits(code & 0x0F); // consume AC
     }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -262,7 +285,7 @@ struct JpegComponent {
 pub fn get_good_jpeg(data: &[u8]) -> UVIResult<Vec<u8>> {
     let mut restart_interv: u16 = 0;
     let mut components: Vec<JpegComponent> = Vec::new();
-    let mut huffman_tables:HashMap<u8,HuffmanTable> = HUFFMAN_TABLES_BASE.clone();
+    let mut huffman_tables:HashMap<u8,Arc<HuffmanTable>> = HUFFMAN_TABLES_BASE.clone();
 
     let datalen = data.len();
     if datalen < 32 {
@@ -273,11 +296,18 @@ pub fn get_good_jpeg(data: &[u8]) -> UVIResult<Vec<u8>> {
         return Err(UVIError::BadJpegError);
     }
 
-    let mut res: Vec<u8> = Vec::new();
+    let mut blk: Vec<u8> = Vec::with_capacity(500000);
+    let mut res: Vec<u8> = Vec::with_capacity(2000000);
 
     let mut pi = 0;
     while data[pi+1] != 0xD9 {
-        let mut blk:Vec<u8> = Vec::new();
+        // Section B.1.1.2
+        // "Any marker may optionally be preceded by any number of fill bytes, which are bytes assigned code X’FF’."
+        if data[pi+1] == 0xFF {
+            continue;
+        }
+        blk.clear();
+        let ps = pi;
         blk.push(data[pi]);
         pi += 1;
         loop {
@@ -334,17 +364,20 @@ pub fn get_good_jpeg(data: &[u8]) -> UVIResult<Vec<u8>> {
                         repeat: repeat
                     });
                 }
+                res.extend_from_slice(&data[ps..pi]);
             },
             0xC4 => {
                 if blk.len() < 30 {
                     return Err(UVIError::BadJpegError);
                 }
-                huffman_tables.insert(blk[5], HuffmanTable::get_huffman_bits(&blk[6..6+16], &blk[6+16..]));
+                huffman_tables.insert(blk[5], 
+                    Arc::new(HuffmanTable::new(&blk[6..6+16].try_into().unwrap(), &blk[6+16..])?));
             },
             0xDD => {
                 if blk.len() >= 6  {
                     restart_interv = u16::from_be_bytes(blk[4..6].try_into().unwrap());
                 }
+                res.extend_from_slice(&data[ps..pi]);
             },
             0xDA => {
                 /* The structure of the Start of Scan header is (in order):
@@ -370,6 +403,7 @@ pub fn get_good_jpeg(data: &[u8]) -> UVIResult<Vec<u8>> {
                     }
                 }
                 //println!("components {:?}", components);
+                let mut pi2 = pi;
                 if restart_interv > 0 && blk[blk.len()-1] == 0xFF {
                     let mut st = Stream::new(&blk[(2+prev)..]);
                     let restart_count = restart_interv;
@@ -378,19 +412,18 @@ pub fn get_good_jpeg(data: &[u8]) -> UVIResult<Vec<u8>> {
                         for component in &components {
                             for _r in 0..component.repeat {
                                 build_matrix(&huffman_tables, &mut st,
-                                    component.id_huffman_dc, component.id_huffman_ac);
+                                    component.id_huffman_dc, component.id_huffman_ac)?;
                             }
                         }
                     }
-                    //if st.get_extras() != 0 {
-                    //    println!("extras {}", st.get_extras());
-                    //}
-                    for _i in 0..st.get_extras() {
-                        blk.pop();
+                    if st.get_extras() != 0 {
+                        pi2 -= 2;
                     }
                 }
+                res.extend_from_slice(&data[ps..pi2]);
             },
             0xD0|0xD1|0xD2|0xD3|0xD4|0xD5|0xD6|0xD7 => {
+                let mut pi2 = pi;
                 if blk[blk.len()-1] == 0xFF {
                     let mut st = Stream::new(&blk[2..]);
                     for _n_mcu in (0..restart_interv).step_by(1) {
@@ -398,27 +431,18 @@ pub fn get_good_jpeg(data: &[u8]) -> UVIResult<Vec<u8>> {
                         for component in &components {
                             for _r in 0..component.repeat {
                                 build_matrix(&huffman_tables, &mut st,
-                                    component.id_huffman_dc, component.id_huffman_ac);
+                                    component.id_huffman_dc, component.id_huffman_ac)?;
                             }
                         }
                     }
-                    //if st.get_extras() != 0 {
-                    //    println!("extras {}", st.get_extras());
-                    //}
-                    for _i in 0..st.get_extras() {
-                        blk.pop();
+                    if st.get_extras() != 0 {
+                        pi2 -= 2;
                     }
                 }
+                res.extend_from_slice(&data[ps..pi2]);
             },
-            _ => {}
-        }
-
-        res.push(0xFF);
-        for el in &blk[1..] {
-            if *el == 0xFF {
-                res.push(0xFF); res.push(0x00);
-            } else {
-                res.push(*el);
+            _ => {
+                res.extend_from_slice(&data[ps..pi]);
             }
         }
     }

@@ -27,6 +27,10 @@ pub enum UVIError {
   BadJpegError,
   #[error("String Utf8 Error")]
   StringUf8Error(#[from] std::string::FromUtf8Error),
+  #[error("failed to decode huffman code")]
+  HuffmanDecodeError,
+  #[error("bad huffman code length")]
+  HuffmanBadCodeLength,
 
   #[error("rusqlite error")]
   RusqliteError(#[from] rusqlite::Error),

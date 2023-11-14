@@ -14,11 +14,18 @@ use crate::cams::CamsMsgs;
 use tokio::time::{Duration, sleep, Instant, sleep_until};
 use crate::jpeg_fix;
 
-use v4l::buffer::Type;
-use v4l::io::traits::CaptureStream;
-use v4l::prelude::*;
-use v4l::video::Capture;
-use v4l::{framesize, frameinterval};
+//use v4l::buffer::Type;
+//use v4l::io::traits::CaptureStream;
+//use v4l::prelude::*;
+//use v4l::video::Capture;
+//use v4l::{framesize, frameinterval};
+
+use nokhwa::{
+    //nokhwa_initialize,
+    utils::{CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType},
+    Camera,
+};
+
 
 /*
 static BOOT_TIME: Lazy<Instant> = Lazy::new(|| Instant::now());
@@ -232,6 +239,19 @@ impl TeleportCam {
         Ok(())
     }
     fn activate_camera(self: &Arc<TeleportCam>, mut camch: mpsc::Receiver<()>) -> UVIResult<()> {
+
+        //let cameras = query(ApiBackend::Auto).unwrap();
+        //let camera = cameras[self.ncam];
+
+        let index = CameraIndex::Index(self.ncam.into());
+        let requested = RequestedFormat::with_formats(RequestedFormatType::HighestFrameRate(30), 
+            &[FrameFormat::MJPEG]);
+        // make the camera
+        println!("Requested format:\n{}", requested);
+        let mut camera = Camera::new(index, requested).unwrap();
+        println!("Requested format:\n{}", camera.camera_format());
+
+        /*
         // Allocate 4 buffers by default
         let buffer_count = 4;
    
@@ -275,15 +295,19 @@ impl TeleportCam {
     
         // warmup
         stream.next()?;
+        */
 
+        camera.open_stream().unwrap();
+        let tstamp = Instant::now();
         loop {
             match camch.try_recv() {
                 Err(mpsc::error::TryRecvError::Disconnected) => break,
                 _ => ()
             }
             
-            let (buf, meta) = stream.next()?;
-            let good_jpeg = jpeg_fix::get_good_jpeg(buf)?;
+            //let (buf, meta) = stream.next()?;
+            let buf = camera.frame_raw().unwrap();
+            let good_jpeg = jpeg_fix::get_good_jpeg(buf.as_ref())?;
         
             /*
             println!("Buffer");
@@ -293,7 +317,8 @@ impl TeleportCam {
             println!("  length    : {}", buf.len());
             */
 
-            let timestamp: u64 = (meta.timestamp.sec as u64)*1000000000+(meta.timestamp.usec as u64)*1000;
+            //let timestamp: u64 = (meta.timestamp.sec as u64)*1000000000+(meta.timestamp.usec as u64)*1000;
+            let timestamp: u64 = tstamp.elapsed().as_nanos() as u64;
             let size: i32 = good_jpeg.len() as i32;
             let mut r:Vec<u8> = Vec::new();
        
