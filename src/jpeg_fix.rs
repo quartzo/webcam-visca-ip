@@ -1,5 +1,4 @@
 
-use std::collections::HashMap;
 use once_cell::sync::Lazy;
 use crate::uvierror::{UVIError, UVIResult};
 use std::iter;
@@ -198,13 +197,22 @@ impl HuffmanTable {
     }
 }
 
-static HUFFMAN_TABLES_BASE:Lazy<HashMap<u8,Arc<HuffmanTable>>> = Lazy::new(|| {
-    let mut tbl = HashMap::new();
-    tbl.insert(0, Arc::new(HuffmanTable::new(&MJPG_DC0_BITS, &MJPG_DC0_HUFFVAL).unwrap()));
-    tbl.insert(1, Arc::new(HuffmanTable::new(&MJPG_DC1_BITS, &MJPG_DC1_HUFFVAL).unwrap()));
-    tbl.insert(0x10 | 0, Arc::new(HuffmanTable::new(&MJPG_AC0_BITS, &MJPG_AC0_HUFFVAL).unwrap()));
-    tbl.insert(0x10 | 1, Arc::new(HuffmanTable::new(&MJPG_AC1_BITS, &MJPG_AC1_HUFFVAL).unwrap()));
-    tbl
+static HUFFMAN_TABLES_BASE:Lazy<[Arc<HuffmanTable>;0x20]> = Lazy::new(|| {
+    let tbl00 = Arc::new(HuffmanTable::new(&MJPG_DC0_BITS, &MJPG_DC0_HUFFVAL).unwrap());
+    let tbl01 = Arc::new(HuffmanTable::new(&MJPG_DC1_BITS, &MJPG_DC1_HUFFVAL).unwrap());
+    let tbl10 = Arc::new(HuffmanTable::new(&MJPG_AC0_BITS, &MJPG_AC0_HUFFVAL).unwrap());
+    let tbl11 = Arc::new(HuffmanTable::new(&MJPG_AC1_BITS, &MJPG_AC1_HUFFVAL).unwrap());
+    [
+        tbl00.clone(),tbl01.clone(), tbl00.clone(),tbl01.clone(),
+        tbl00.clone(),tbl01.clone(), tbl00.clone(),tbl01.clone(),
+        tbl00.clone(),tbl01.clone(), tbl00.clone(),tbl01.clone(),
+        tbl00.clone(),tbl01.clone(), tbl00.clone(),tbl01.clone(),
+
+        tbl10.clone(),tbl11.clone(), tbl10.clone(),tbl11.clone(), 
+        tbl10.clone(),tbl11.clone(), tbl10.clone(),tbl11.clone(), 
+        tbl10.clone(),tbl11.clone(), tbl10.clone(),tbl11.clone(), 
+        tbl10.clone(),tbl11.clone(), tbl10.clone(),tbl11.clone(), 
+    ]
 });
 
 struct Stream<'a> {
@@ -221,22 +229,20 @@ impl<'a> Stream<'a> {
             nbits_av: 0, bits_av: 0
         }
     }
+    #[inline]
     fn get_extra_bits(&mut self) {
-        while self.nbits_av <= 56 {
-            let byte = if self.pos < self.data.len() {
-                self.data[self.pos]
-            } else {
-                0
-            };
-            self.pos += 1;
-            self.bits_av |= (byte as u64) << (56 - self.nbits_av);
-            self.nbits_av += 8;
-        }
+        let byte = match self.data.get(self.pos) {
+            Some(b) => *b,
+            None => 0
+        };
+        self.pos += 1;
+        self.bits_av |= (byte as u64) << (56 - self.nbits_av);
+        self.nbits_av += 8;
     }
     #[inline]
     fn peek_bits(&mut self, count: u8) -> u32 {
         assert!(count <= 32);
-        if self.nbits_av < count {
+        while self.nbits_av < count {
             self.get_extra_bits();
         }
         ((self.bits_av >> (64 - count)) & ((1 << count) - 1)) as u32
@@ -244,7 +250,7 @@ impl<'a> Stream<'a> {
     #[inline]
     fn consume_bits(&mut self, count: u8) {
         assert!(count <= 32);
-        if self.nbits_av < count {
+        while self.nbits_av < count {
             self.get_extra_bits();
         }
         self.bits_av <<= count as usize;
@@ -255,14 +261,14 @@ impl<'a> Stream<'a> {
     }
 }
 
-fn build_matrix(huffman_tables:&HashMap<u8,Arc<HuffmanTable>>, st: &mut Stream, 
+fn build_matrix(huffman_tables:&[Arc<HuffmanTable>; 0x20], st: &mut Stream, 
     id_huffman_dc: u8, id_huffman_ac: u8) -> UVIResult<()> {
-    let mut code = huffman_tables[&(0 + id_huffman_dc)].decode(st)?;
+    let mut code = huffman_tables[(id_huffman_dc & 0xF) as usize].decode(st)?;
     st.consume_bits(code); // consume DC
 
     let mut l = 1;
     while l < 64 {
-        code = huffman_tables[&(0x10 + id_huffman_ac)].decode(st)?;
+        code = huffman_tables[(0x10|(id_huffman_ac & 0xF)) as usize].decode(st)?;
         if code == 0 {
             break;
         }
@@ -285,7 +291,7 @@ struct JpegComponent {
 pub fn get_good_jpeg(data: &[u8]) -> UVIResult<Vec<u8>> {
     let mut restart_interv: u16 = 0;
     let mut components: Vec<JpegComponent> = Vec::new();
-    let mut huffman_tables:HashMap<u8,Arc<HuffmanTable>> = HUFFMAN_TABLES_BASE.clone();
+    let mut huffman_tables:[Arc<HuffmanTable>; 0x20] = HUFFMAN_TABLES_BASE.clone();
 
     let datalen = data.len();
     if datalen < 32 {
@@ -370,8 +376,8 @@ pub fn get_good_jpeg(data: &[u8]) -> UVIResult<Vec<u8>> {
                 if blk.len() < 30 {
                     return Err(UVIError::BadJpegError);
                 }
-                huffman_tables.insert(blk[5], 
-                    Arc::new(HuffmanTable::new(&blk[6..6+16].try_into().unwrap(), &blk[6+16..])?));
+                huffman_tables[(blk[5] & 0x1F) as usize] = 
+                    Arc::new(HuffmanTable::new(&blk[6..6+16].try_into().unwrap(), &blk[6+16..])?);
             },
             0xDD => {
                 if blk.len() >= 6  {

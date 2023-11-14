@@ -8,6 +8,9 @@ edition = "2021"
 [features]
 uvcmock = [] # feature has no explicit dependencies
 
+[profile.release]
+debug = true
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 iced = { version = "0.10.0", features = ["tokio"] }
